@@ -1,0 +1,14 @@
+{
+  "name": "Sublima Fácil",
+  "short_name": "Sublima Fácil",
+  "description": "Editor de diseños para sublimación e impresión 3D",
+  "lang": "es-MX",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#15131b",
+  "theme_color": "#c2187a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

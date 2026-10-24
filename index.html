@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sublima Fácil</title>
+<meta name="description" content="Editor de diseños para sublimación (tazas, termos, playeras) e impresión 3D.">
+<meta name="theme-color" content="#c2187a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Anton&family=Bangers&family=Bebas+Neue&family=Caveat:wght@700&family=Dancing+Script:wght@700&family=Fredoka:wght@600&family=Great+Vibes&family=Lobster&family=Luckiest+Guy&family=Montserrat:wght@400;600;800&family=Pacifico&family=Permanent+Marker&family=Poppins:wght@700&display=swap" rel="stylesheet">
@@ -204,6 +208,7 @@
 <header class="top">
   <div class="brand"><span class="logo">S</span> Sublima Fácil</div>
   <div class="tools">
+    <button class="hbtn" id="btnInstall" hidden title="Instala el editor como app; funciona sin internet">⬇ Instalar app</button>
     <button class="hbtn" id="btnUndo" title="Deshacer (Ctrl+Z)">↶ Deshacer</button>
     <button class="hbtn" id="btnRedo" title="Rehacer (Ctrl+Y)">↷ Rehacer</button>
     <button class="hbtn" id="btnNew">✨ Nuevo</button>
@@ -3575,6 +3580,20 @@ function estimateTris(m) {
   const top = 2 * (m.nx - 1) * (m.ny - 1);
   return top * (curvedOn() ? 2 : 1) + 6 * (m.nx + m.ny);
 }
+
+/* ---------- App instalable y sin internet ---------- */
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; $('btnInstall').hidden = false; });
+$('btnInstall').onclick = async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null; $('btnInstall').hidden = true;
+};
+window.addEventListener('appinstalled', () => toast('¡Listo! Sublima Fácil quedó instalado como app.'));
 
 /* ---------- Inicio ---------- */
 new ResizeObserver(() => { if (tpl) { fit(); render(); } }).observe(stage);
