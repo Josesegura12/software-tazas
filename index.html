@@ -83,6 +83,8 @@
     cursor: pointer; font-size: 14px; padding: 2px 5px; border-radius: 6px;
   }
   .tpl .del:hover { color: var(--bad); background: var(--bg); }
+  .cat { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .05em; margin: 8px 2px 0; }
+  .cat:first-child { margin-top: 0; }
 
   .center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .stage { position: relative; flex: 1; background: var(--stage); min-height: 300px; }
@@ -164,6 +166,7 @@
     .left { border-right: 0; border-bottom: 1px solid var(--line); }
     .tpl-list { flex-direction: row; overflow-x: auto; }
     .tpl { min-width: 170px; }
+    .cat { display: none; }
     .right { border-left: 0; }
     .split { grid-template-columns: 1fr; }
   }
@@ -185,6 +188,7 @@
 <main class="app">
   <aside class="left">
     <h2>Productos</h2>
+    <input type="text" id="tplSearch" placeholder="🔍 Buscar producto…" style="margin-bottom:10px">
     <div id="tplList" class="tpl-list"></div>
     <button id="btnNewTpl" class="btn ghost">+ Nueva plantilla</button>
   </aside>
@@ -515,19 +519,43 @@ const TAU = Math.PI * 2;
 const SAFE_CM = 0.3;
 const HANDLE_CM = 1.5;
 
+const CATS = ['Tazas y vasos', 'Termos y botellas', 'Ropa y textiles', 'Hogar y decoración', 'Accesorios y oficina'];
+const [TAZAS, TERMOS, ROPA, HOGAR, ACCES] = CATS;
 const BASE = [
-  { id: 'taza11',   icon: '☕', name: 'Taza 11 oz',         w: 20,   h: 9.5,  shape: 'rect',   mock: 'mug' },
-  { id: 'taza15',   icon: '☕', name: 'Taza 15 oz',         w: 21.5, h: 10.5, shape: 'rect',   mock: 'mug' },
-  { id: 'termo',    icon: '🥤', name: 'Termo 20 oz',        w: 23.5, h: 20.5, shape: 'rect',   mock: 'tumbler' },
-  { id: 'playera',  icon: '👕', name: 'Playera (frente)',   w: 28,   h: 35,   shape: 'rect',   mock: 'shirt' },
-  { id: 'cojin',    icon: '🛋️', name: 'Cojín 40×40',        w: 40,   h: 40,   shape: 'rect',   mock: 'pillow' },
-  { id: 'mousepad', icon: '🖱️', name: 'Mousepad',           w: 23,   h: 19,   shape: 'rect',   mock: 'mousepad' },
-  { id: 'gorra',    icon: '🧢', name: 'Gorra (frente)',     w: 12,   h: 7,    shape: 'rect',   mock: 'cap' },
-  { id: 'rompe',    icon: '🧩', name: 'Rompecabezas carta', w: 27.9, h: 21.6, shape: 'rect',   mock: 'puzzle' },
-  { id: 'azulejo',  icon: '🔲', name: 'Azulejo 15×15',      w: 15,   h: 15,   shape: 'rect',   mock: 'flat' },
-  { id: 'plato',    icon: '🍽️', name: 'Plato 20 cm',        w: 20,   h: 20,   shape: 'circle', mock: 'plate' },
-  { id: 'llavero',  icon: '🔑', name: 'Llavero redondo',    w: 5,    h: 5,    shape: 'circle', mock: 'keychain' },
-  { id: 'pluma',    icon: '🖊️', name: 'Pluma',              w: 14,   h: 2.5,  shape: 'rect',   mock: 'pen' },
+  { id: 'taza11',      cat: TAZAS,  icon: '☕', name: 'Taza 11 oz',               w: 20,   h: 9.5,  shape: 'rect',   mock: 'mug' },
+  { id: 'taza15',      cat: TAZAS,  icon: '☕', name: 'Taza 15 oz',               w: 21.5, h: 10.5, shape: 'rect',   mock: 'mug' },
+  { id: 'tazaPeltre',  cat: TAZAS,  icon: '🫖', name: 'Taza de peltre 12 oz',     w: 21,   h: 8,    shape: 'rect',   mock: 'mug' },
+  { id: 'tarro',       cat: TAZAS,  icon: '🍺', name: 'Tarro cervecero 16 oz',    w: 20,   h: 12,   shape: 'rect',   mock: 'mug' },
+  { id: 'vasoLata',    cat: TAZAS,  icon: '🥛', name: 'Vaso tipo lata 16 oz',     w: 24,   h: 12,   shape: 'rect',   mock: 'tumbler' },
+  { id: 'termo',       cat: TERMOS, icon: '🥤', name: 'Termo 20 oz',              w: 23.5, h: 20.5, shape: 'rect',   mock: 'tumbler' },
+  { id: 'termo30',     cat: TERMOS, icon: '🥤', name: 'Termo 30 oz',              w: 24.6, h: 25,   shape: 'rect',   mock: 'tumbler' },
+  { id: 'termo12',     cat: TERMOS, icon: '🧃', name: 'Termo infantil 12 oz',     w: 22.5, h: 16.5, shape: 'rect',   mock: 'tumbler' },
+  { id: 'botella',     cat: TERMOS, icon: '🍶', name: 'Botella aluminio 600 ml',  w: 21,   h: 15,   shape: 'rect',   mock: 'tumbler' },
+  { id: 'playera',     cat: ROPA,   icon: '👕', name: 'Playera (frente)',         w: 28,   h: 35,   shape: 'rect',   mock: 'shirt' },
+  { id: 'playeraNino', cat: ROPA,   icon: '👕', name: 'Playera niño (frente)',    w: 20,   h: 25,   shape: 'rect',   mock: 'shirt' },
+  { id: 'pecho',       cat: ROPA,   icon: '👔', name: 'Logo de pecho',            w: 9,    h: 9,    shape: 'rect',   mock: 'shirt' },
+  { id: 'gorra',       cat: ROPA,   icon: '🧢', name: 'Gorra (frente)',           w: 12,   h: 7,    shape: 'rect',   mock: 'cap' },
+  { id: 'bolsa',       cat: ROPA,   icon: '👜', name: 'Bolsa ecológica',          w: 30,   h: 30,   shape: 'rect',   mock: 'flat' },
+  { id: 'mandil',      cat: ROPA,   icon: '🧑‍🍳', name: 'Mandil',                 w: 25,   h: 25,   shape: 'rect',   mock: 'flat' },
+  { id: 'cojin30',     cat: HOGAR,  icon: '🛋️', name: 'Cojín 30×30',              w: 30,   h: 30,   shape: 'rect',   mock: 'pillow' },
+  { id: 'cojin',       cat: HOGAR,  icon: '🛋️', name: 'Cojín 40×40',              w: 40,   h: 40,   shape: 'rect',   mock: 'pillow' },
+  { id: 'cojin45',     cat: HOGAR,  icon: '🛋️', name: 'Cojín 45×45',              w: 45,   h: 45,   shape: 'rect',   mock: 'pillow' },
+  { id: 'azulejo',     cat: HOGAR,  icon: '🔲', name: 'Azulejo 15×15',            w: 15,   h: 15,   shape: 'rect',   mock: 'flat' },
+  { id: 'azulejo20',   cat: HOGAR,  icon: '🔲', name: 'Azulejo 20×20',            w: 20,   h: 20,   shape: 'rect',   mock: 'flat' },
+  { id: 'plato',       cat: HOGAR,  icon: '🍽️', name: 'Plato 20 cm',              w: 20,   h: 20,   shape: 'circle', mock: 'plate' },
+  { id: 'plato25',     cat: HOGAR,  icon: '🍽️', name: 'Plato 25 cm',              w: 25,   h: 25,   shape: 'circle', mock: 'plate' },
+  { id: 'reloj',       cat: HOGAR,  icon: '🕒', name: 'Reloj MDF 20 cm',          w: 20,   h: 20,   shape: 'circle', mock: 'plate' },
+  { id: 'cuadro',      cat: HOGAR,  icon: '🖼️', name: 'Cuadro MDF 20×25',         w: 20,   h: 25,   shape: 'rect',   mock: 'flat' },
+  { id: 'placa',       cat: HOGAR,  icon: '🖼️', name: 'Placa de aluminio 20×30',  w: 20,   h: 30,   shape: 'rect',   mock: 'flat' },
+  { id: 'portavasos',  cat: HOGAR,  icon: '🟫', name: 'Portavasos cuadrado',      w: 9.5,  h: 9.5,  shape: 'rect',   mock: 'flat' },
+  { id: 'portavasosR', cat: HOGAR,  icon: '🟤', name: 'Portavasos redondo',       w: 9.5,  h: 9.5,  shape: 'circle', mock: 'plate' },
+  { id: 'rompe',       cat: HOGAR,  icon: '🧩', name: 'Rompecabezas carta',       w: 27.9, h: 21.6, shape: 'rect',   mock: 'puzzle' },
+  { id: 'mousepad',    cat: ACCES,  icon: '🖱️', name: 'Mousepad',                 w: 23,   h: 19,   shape: 'rect',   mock: 'mousepad' },
+  { id: 'mousepadR',   cat: ACCES,  icon: '🖱️', name: 'Mousepad redondo',         w: 20,   h: 20,   shape: 'circle', mock: 'plate' },
+  { id: 'llavero',     cat: ACCES,  icon: '🔑', name: 'Llavero redondo',          w: 5,    h: 5,    shape: 'circle', mock: 'keychain' },
+  { id: 'llaveroRect', cat: ACCES,  icon: '🔑', name: 'Llavero rectangular',      w: 3.5,  h: 5.5,  shape: 'rect',   mock: 'keychain' },
+  { id: 'boton',       cat: ACCES,  icon: '📍', name: 'Botón / pin 5.8 cm',       w: 5.8,  h: 5.8,  shape: 'circle', mock: 'pin' },
+  { id: 'pluma',       cat: ACCES,  icon: '🖊️', name: 'Pluma',                    w: 14,   h: 2.5,  shape: 'rect',   mock: 'pen' },
 ];
 
 const FONTS = {
@@ -600,7 +628,19 @@ const fileName = () => tpl.name.replace(/[^\wáéíóúñÁÉÍÓÚÑ -]/g, '').
 function renderTplList() {
   const list = $('tplList');
   list.innerHTML = '';
-  for (const t of allTemplates()) {
+  const norm = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const q = norm($('tplSearch').value.trim());
+  const shown = allTemplates().filter(t => !q || norm(`${t.name} ${t.cat || ''}`).includes(q));
+  if (!shown.length) list.innerHTML = '<p class="note">No hay productos con ese nombre. Créalo con “Nueva plantilla”.</p>';
+  let lastCat = null;
+  for (const t of shown) {
+    const cat = t.cat || 'Mis plantillas';
+    if (cat !== lastCat) {
+      const hd = document.createElement('div');
+      hd.className = 'cat'; hd.textContent = cat;
+      list.appendChild(hd);
+      lastCat = cat;
+    }
     const b = document.createElement('button');
     b.className = 'tpl' + (tpl && tpl.id === t.id ? ' active' : '');
     b.innerHTML = `<span class="ico">${t.icon}</span><span><span class="nm"></span><span class="sz">${fmt(t.w)} × ${fmt(t.h)} cm${t.shape === 'circle' ? ' · redondo' : ''}</span></span>`;
@@ -1621,6 +1661,7 @@ $('guideClear').onclick = () => { guide = null; idb.del('kv', 'guide:' + tpl.id)
 $('guideOp').oninput = e => { settings.guideOpacity = +e.target.value; saveSettings(); setOut('guideOpOut', e.target.value + '%'); render(); };
 
 /* ---------- Nueva plantilla ---------- */
+$('tplSearch').oninput = renderTplList;
 $('btnNewTpl').onclick = () => { $('tplForm').reset(); $('dlg').showModal(); $('tName').focus(); };
 $('tCancel').onclick = () => $('dlg').close();
 $('tplForm').addEventListener('submit', () => {
@@ -1685,19 +1726,26 @@ let sheetPiece = null, sheetCanvas = null, sheetL = null, sheetQty = 0;
 function sheetLayout() {
   const paper = PAPERS[settings.paper];
   const pw = px2cm(PW + 2 * B), ph = px2cm(PH + 2 * B);
-  const gap = +settings.gap || 0, m = 0.4;
-  let best = null;
-  for (const o of settings.orient === 'auto' ? ['v', 'h'] : [settings.orient]) {
-    const W = o === 'v' ? paper.w : paper.h, H = o === 'v' ? paper.h : paper.w;
-    for (const rot of [false, true]) {
-      const w = rot ? ph : pw, h = rot ? pw : ph;
-      const cols = Math.max(0, Math.floor((W - 2 * m + gap) / (w + gap)));
-      const rows = Math.max(0, Math.floor((H - 2 * m + gap) / (h + gap)));
-      const n = cols * rows;
-      if (!best || n > best.n) best = { W, H, cols, rows, n, rot, w, h, gap, o, paper };
+  const fitWith = (m, gap) => {
+    let best = null;
+    for (const o of settings.orient === 'auto' ? ['v', 'h'] : [settings.orient]) {
+      const W = o === 'v' ? paper.w : paper.h, H = o === 'v' ? paper.h : paper.w;
+      for (const rot of [false, true]) {
+        const w = rot ? ph : pw, h = rot ? pw : ph;
+        const cols = Math.max(0, Math.floor((W - 2 * m + gap) / (w + gap) + 1e-9));
+        const rows = Math.max(0, Math.floor((H - 2 * m + gap) / (h + gap) + 1e-9));
+        const n = cols * rows;
+        if (!best || n > best.n) best = { W, H, cols, rows, n, rot, w, h, gap, o, paper };
+      }
     }
-  }
-  return best;
+    return best;
+  };
+  const best = fitWith(0.4, +settings.gap || 0);
+  if (best.n) return best;
+  // Piezas casi del tamaño de la hoja (platos, termos): se acomodan sin márgenes
+  const tight = fitWith(0, 0);
+  tight.tight = true;
+  return tight.n ? tight : best;
 }
 
 function buildSheet(piece, L, qty) {
@@ -1717,7 +1765,7 @@ function buildSheet(piece, L, qty) {
     x.drawImage(piece, 0, 0);
     x.restore();
   }
-  if (settings.marks && qty > 0) {
+  if (settings.marks && qty > 0 && !L.tight) {
     // Marcas de corte por fuera de la cuadrícula, alineadas a la línea de corte de cada pieza
     const b = px2cm(B), off = 0.1, len = Math.max(0.15, Math.min(0.5, Math.min(sx, sy) - off - 0.1));
     const gx1 = sx + colsUsed * L.w + (colsUsed - 1) * L.gap, gy1 = sy + rowsUsed * L.h + (rowsUsed - 1) * L.gap;
@@ -1755,6 +1803,7 @@ function updateSheet() {
     ? `${sheetQty} pieza${sheetQty > 1 ? 's' : ''} en hoja ${sheetL.paper.name} ${orient} (caben ${sheetL.n}).`
     : 'La pieza no cabe en esta hoja. Elige una hoja más grande.';
   if (want > sheetL.n && sheetL.n) $('sheetInfo').textContent += ` Solo caben ${sheetL.n}; usa otra hoja para el resto.`;
+  if (sheetL.tight && sheetL.n) $('sheetInfo').textContent += ' Va casi a la orilla: activa "impresión sin bordes" en tu impresora o usa una hoja más grande.';
   $('sheetPrint').disabled = $('sheetDownload').disabled = !sheetQty;
   const hasText = layers.some(l => l.type === 'text');
   $('mirrorWarn').hidden = $('sheetMirror').checked || !hasText;
@@ -1885,6 +1934,35 @@ function flatMock(radiusF, extra) {
   };
 }
 
+// Llavero o botón: redondo o rectangular, con argolla opcional
+function keyMock(ring) {
+  return (c, D, rot, shadow) => {
+    const { w, h } = fitBox(380, 380), cx = 500, cy = ring ? 410 : 375;
+    const round = tpl.shape === 'circle';
+    const path = pad => {
+      c.beginPath();
+      if (round) c.ellipse(cx, cy, w / 2 + pad, h / 2 + pad, 0, 0, TAU);
+      else c.roundRect(cx - w / 2 - pad, cy - h / 2 - pad, w + 2 * pad, h + 2 * pad, Math.min(w, h) * 0.1 + pad);
+    };
+    shadow(cx, cy + h / 2 + 20, w * 0.5, 22);
+    if (ring) {
+      c.strokeStyle = '#a9a5b0'; c.lineWidth = 8;
+      c.beginPath(); c.arc(cx, cy - h / 2 - 52, 34, 0, TAU); c.stroke();
+      c.lineWidth = 6; c.beginPath(); c.ellipse(cx, cy - h / 2 - 12, 9, 14, 0, 0, TAU); c.stroke();
+    }
+    path(8);
+    const mg = c.createLinearGradient(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
+    mg.addColorStop(0, '#e9e7ee'); mg.addColorStop(1, '#8e8a96');
+    c.fillStyle = mg; c.fill();
+    c.save(); path(0); c.clip();
+    c.drawImage(D, cx - w / 2, cy - h / 2, w, h);
+    const gl = c.createRadialGradient(cx - w * 0.2, cy - h * 0.25, 0, cx, cy, Math.max(w, h) * 0.6);
+    gl.addColorStop(0, 'rgba(255,255,255,.4)'); gl.addColorStop(.5, 'rgba(255,255,255,0)'); gl.addColorStop(1, 'rgba(0,0,0,.15)');
+    c.fillStyle = gl; c.fillRect(cx - w / 2, cy - h / 2, w, h);
+    c.restore();
+  };
+}
+
 const MOCKS = {
   mug(c, D, rot, shadow) {
     const C = tpl.w + 5, Hb = 430, Wb = Hb * (C / Math.PI) / (tpl.h + 0.8);
@@ -1980,23 +2058,8 @@ const MOCKS = {
     c.restore();
     path(); c.strokeStyle = 'rgba(0,0,0,.12)'; c.lineWidth = 1.5; c.stroke();
   },
-  keychain(c, D, rot, shadow) {
-    const { w, h } = fitBox(380, 380), cx = 500, cy = 410;
-    shadow(cx, cy + h / 2 + 20, w * 0.5, 22);
-    c.strokeStyle = '#a9a5b0'; c.lineWidth = 8;
-    c.beginPath(); c.arc(cx, cy - h / 2 - 52, 34, 0, TAU); c.stroke();
-    c.lineWidth = 6; c.beginPath(); c.ellipse(cx, cy - h / 2 - 12, 9, 14, 0, 0, TAU); c.stroke();
-    c.beginPath(); c.ellipse(cx, cy, w / 2 + 8, h / 2 + 8, 0, 0, TAU);
-    const mg = c.createLinearGradient(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
-    mg.addColorStop(0, '#e9e7ee'); mg.addColorStop(1, '#8e8a96');
-    c.fillStyle = mg; c.fill();
-    c.save(); c.beginPath(); c.ellipse(cx, cy, w / 2, h / 2, 0, 0, TAU); c.clip();
-    c.drawImage(D, cx - w / 2, cy - h / 2, w, h);
-    const gl = c.createRadialGradient(cx - w * 0.2, cy - h * 0.25, 0, cx, cy, w * 0.6);
-    gl.addColorStop(0, 'rgba(255,255,255,.4)'); gl.addColorStop(.5, 'rgba(255,255,255,0)'); gl.addColorStop(1, 'rgba(0,0,0,.15)');
-    c.fillStyle = gl; c.fillRect(cx - w / 2, cy - h / 2, w, h);
-    c.restore();
-  },
+  keychain: keyMock(true),
+  pin: keyMock(false),
   cap(c, D, rot, shadow) {
     const cx = 500, by = 470;
     shadow(cx, by + 90, 320, 30);
