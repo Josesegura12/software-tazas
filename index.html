@@ -529,6 +529,9 @@
       <option value="keychain">Llavero</option>
       <option value="pen">Pluma</option>
       <option value="cap">Gorra</option>
+      <option value="mousepad">Mousepad</option>
+      <option value="puzzle">Rompecabezas</option>
+      <option value="pin">Botón / pin</option>
     </select>
     <div class="actions">
       <button type="button" class="btn" id="tCancel">Cancelar</button>
@@ -1060,31 +1063,44 @@ function textLayout(l) {
 function drawText(c, l) {
   const m = textLayout(l), curve = l.curve || 0, align = l.align || 'center', n = m.lines.length;
   c.font = fontStr(l); c.textBaseline = 'middle'; c.textAlign = 'center';
-  if (l.shadow) { c.shadowColor = 'rgba(0,0,0,.4)'; c.shadowBlur = l.size * 0.12; c.shadowOffsetX = c.shadowOffsetY = l.size * 0.05; }
-  const strokeOn = l.stroke, strokeW = l.size * (l.strokeW ?? 14) / 100;
-  const glyph = (ch, x, y, rot) => {
-    c.save(); c.translate(x, y); if (rot) c.rotate(rot);
-    if (strokeOn) { c.lineJoin = 'round'; c.lineWidth = strokeW; c.strokeStyle = l.strokeColor || '#ffffff'; c.strokeText(ch, 0, 0); }
-    c.fillStyle = l.color; c.fillText(ch, 0, 0);
-    c.restore();
-  };
+  // Posición y giro de cada letra
+  const glyphs = [];
   m.lines.forEach((L, i) => {
     // Con curva el bloque se centra contando lo que baja (o sube) el arco
     const y = (i - (n - 1) / 2) * m.lh + (curve > 0 ? -m.sag / 2 : curve < 0 ? m.sag / 2 : 0);
     if (!curve) {
-      const x0 = align === 'left' ? -m.w / 2 : align === 'right' ? m.w / 2 - L.len : -L.len / 2;
-      let x = x0;
-      for (const { ch, w } of L.chars) { glyph(ch, x + (w - m.sp) / 2, y, 0); x += w; }
+      let x = align === 'left' ? -m.w / 2 : align === 'right' ? m.w / 2 - L.len : -L.len / 2;
+      for (const { ch, w } of L.chars) { glyphs.push([ch, x + (w - m.sp) / 2, y, 0]); x += w; }
       return;
     }
     const dir = curve > 0 ? 1 : -1;
     let a = -L.len / L.R / 2;
     for (const { ch, w } of L.chars) {
       const mid = a + (w - m.sp) / 2 / L.R;
-      glyph(ch, L.R * Math.sin(mid), y + dir * L.R * (1 - Math.cos(mid)), dir * mid);
+      glyphs.push([ch, L.R * Math.sin(mid), y + dir * L.R * (1 - Math.cos(mid)), dir * mid]);
       a += w / L.R;
     }
   });
+  // La sombra de canvas no sigue la escala ni el espejo: se calcula con la transformación actual
+  const setShadow = on => {
+    if (!on) { c.shadowColor = 'transparent'; return; }
+    const t = c.getTransform(), o = l.size * 0.05;
+    c.shadowColor = 'rgba(0,0,0,.4)';
+    c.shadowBlur = l.size * 0.12 * Math.hypot(t.a, t.b);
+    c.shadowOffsetX = (t.a + t.c) * o; c.shadowOffsetY = (t.b + t.d) * o;
+  };
+  const pass = draw => glyphs.forEach(([ch, x, y, rot]) => {
+    c.save(); c.translate(x, y); if (rot) c.rotate(rot);
+    draw(ch); c.restore();
+  });
+  // Todos los contornos primero y luego todos los rellenos: así el contorno de una letra
+  // no tapa a la anterior (importa en letras cursivas que se unen)
+  if (l.stroke) {
+    c.lineJoin = 'round'; c.lineWidth = l.size * (l.strokeW ?? 14) / 100; c.strokeStyle = l.strokeColor || '#ffffff';
+    c.save(); setShadow(l.shadow); pass(ch => c.strokeText(ch, 0, 0)); c.restore();
+  }
+  c.fillStyle = l.color;
+  c.save(); setShadow(l.shadow && !l.stroke); pass(ch => c.fillText(ch, 0, 0)); c.restore();
 }
 
 function cellRect(i) {
@@ -1818,7 +1834,7 @@ async function loadDoc(d) {
   clearTimeout(saveT);
   loading = true;
   try {
-    const t = allTemplates().find(x => x.id === d.tplId) || d.tpl;
+    const t = docTemplate(d);
     layers = []; cells = []; sel = null;
     setTemplate(t, false);
     const ls = [];
@@ -1962,7 +1978,13 @@ function addShapeQuiet(kind, color) {
   layers.push(l);
   return l;
 }
-$('preset').onchange = e => { if (e.target.value) applyPreset(e.target.value); e.target.value = ''; };
+$('preset').onchange = async e => {
+  const key = e.target.value; e.target.value = '';
+  if (!key) return;
+  const P = PRESETS[key];
+  await loadFonts([P.tFont, P.nFont].filter(Boolean).map(font => ({ type: 'text', font, size: 40 })));
+  applyPreset(key);
+};
 // Doble clic en un texto: ir directo a escribir
 cv.addEventListener('dblclick', () => { if (sel && sel.type === 'text') { $('txt').focus(); $('txt').select(); } });
 
@@ -2127,7 +2149,9 @@ $('btnDup').onclick = duplicateSel;
 // Taza: la misma pieza centrada en cada lado del asa (las orillas del diseño quedan junto al asa)
 $('btnBothSides').onclick = () => {
   if (!sel) return;
-  const a = sel, b = cloneLayer(a), { w, h } = layerSize(a);
+  if (sel.frame) { toast('Selecciona la imagen o el texto que quieres en los dos lados.', 'warn'); return; }
+  const a = sel, b = cloneLayer(a), sz = layerSize(a), turned = Math.abs(Math.sin(a.rot * Math.PI / 180)) > 0.7;
+  const w = turned ? sz.h * (a.sy || 1) / (a.sx || 1) : sz.w, h = turned ? sz.w * (a.sx || 1) / (a.sy || 1) : sz.h;
   const halfW = PW / 2 - cm2px(HANDLE_CM) - cm2px(SAFE_CM), maxH = PH - 2 * cm2px(SAFE_CM);
   const s = Math.min(halfW / (w * (a.sx || 1)), maxH / (h * (a.sy || 1)), a.s);
   for (const [l, x] of [[a, PW / 4], [b, PW * 3 / 4]]) Object.assign(l, { x, y: PH / 2, s, fit: null, blurBg: false, cell: null });
@@ -2375,7 +2399,7 @@ $('txtAuto').onclick = () => {
   const d = c.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0).data;
   let sum = 0, n = 0, sq = 0;
   for (let i = 0; i < d.length; i += 4) {
-    const L = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+    const L = d[i + 3] < 128 ? 1 : (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
     sum += L; sq += L * L; n++;
   }
   const avg = sum / n, busyBg = Math.sqrt(Math.max(0, sq / n - avg * avg)) > 0.18;
@@ -2702,21 +2726,7 @@ async function allSheetPngs() {
   for (let p = 0; p < sheetPages(); p++) out.push(await toPng(buildSheet(getSheetPiece, sheetL, pageQty(p), p * sheetL.n)));
   return out;
 }
-$('sheetPrint').onclick = async () => {
-  const w = window.open('', '_blank');
-  if (!w) { toast('El navegador bloqueó la ventana de impresión: permite las ventanas emergentes para esta página.', 'bad'); return; }
-  w.document.write('<p style="font:16px sans-serif;padding:20px">Preparando impresión…</p>');
-  const urls = (await allSheetPngs()).map(b => URL.createObjectURL(b));
-  const { W, H } = sheetL;
-  // margin:0 evita que el navegador imprima título, fecha y ruta del archivo
-  w.document.open();
-  w.document.write(`<!doctype html><html><head><title>${esc(tpl.name)}</title>
-    <style>@page{size:${W}cm ${H}cm;margin:0}html,body{margin:0;padding:0}
-    img{display:block;width:${W}cm;height:${(H - 0.02).toFixed(2)}cm;break-after:page}img:last-of-type{break-after:auto}</style></head>
-    <body>${urls.map(u => `<img src="${u}">`).join('')}
-    <script>var n=0,imgs=document.images;for(var i=0;i<imgs.length;i++)imgs[i].onload=function(){if(++n===imgs.length)setTimeout(function(){print()},300)};<\/script></body></html>`);
-  w.document.close();
-};
+$('sheetPrint').onclick = () => printJob(allSheetPngs, sheetL.W, sheetL.H, tpl.name);
 $('sheetDownload').onclick = () => busy(async () => {
   const m = $('sheetMirror').checked, pngs = await allSheetPngs(), base = `${fileName()}_hoja-${sheetL.paper.name}${m ? '_espejo' : ''}`;
   if (pngs.length === 1) { download(pngs[0], `${base}_${sheetQty}pzs.png`); return; }
@@ -2726,11 +2736,23 @@ $('sheetDownload').onclick = () => busy(async () => {
 
 /* ---------- Hoja combinada: varios diseños distintos en la misma hoja ---------- */
 // Abre la ventana de impresión con varias hojas (cada PNG es una hoja de W × H cm)
-function printPngs(pngs, W, H, title) {
+let printing = false;
+// Abre la ventana al momento del clic (si no, el navegador la bloquea) y luego genera las hojas
+async function printJob(makePngs, W, H, title) {
+  if (printing) return;
   const w = window.open('', '_blank');
   if (!w) { toast('El navegador bloqueó la ventana de impresión: permite las ventanas emergentes para esta página.', 'bad'); return; }
+  w.document.write('<p style="font:16px sans-serif;padding:20px">Preparando impresión…</p>');
+  printing = true; document.body.style.cursor = 'wait';
+  try { printPngs(await makePngs(), W, H, title, w); }
+  catch (err) { w.close(); toast(err.message || 'No se pudo preparar la impresión.', 'bad'); }
+  finally { printing = false; document.body.style.cursor = ''; }
+}
+function printPngs(pngs, W, H, title, w) {
   const urls = pngs.map(b => URL.createObjectURL(b));
+  setTimeout(() => urls.forEach(u => URL.revokeObjectURL(u)), 120000);   // tiempo de sobra para imprimir
   // margin:0 evita que el navegador imprima título, fecha y ruta del archivo
+  w.document.open();
   w.document.write(`<!doctype html><html><head><title>${esc(title)}</title>
     <style>@page{size:${W}cm ${H}cm;margin:0}html,body{margin:0;padding:0}
     img{display:block;width:${W}cm;height:${(H - 0.02).toFixed(2)}cm;break-after:page}img:last-of-type{break-after:auto}</style></head>
@@ -2740,10 +2762,17 @@ function printPngs(pngs, W, H, title) {
 }
 
 const comb = { items: [], pages: [], page: 0, W: 0, H: 0 };
+function docTemplate(d) {
+  const live = allTemplates().find(x => x.id === d.tplId);
+  if (live && (!d.tpl || (live.w === d.tpl.w && live.h === d.tpl.h && live.shape === d.tpl.shape))) return live;
+  return d.tpl || live;
+}
+// Las letras de Google se descargan al usarse; hay que esperarlas antes de dibujar o medir
+const loadFonts = ls => Promise.all(ls.filter(l => l.type === 'text').map(l => document.fonts.load(fontStr(l)).catch(() => {})));
 // Pieza lista para imprimir de un diseño guardado: se cambia el editor a ese diseño un instante
 // (sin esperas a la mitad, para que nada más vea el cambio) y se regresa todo como estaba.
 async function pieceFromDoc(doc, mirror) {
-  const t = allTemplates().find(x => x.id === doc.tplId) || doc.tpl;
+  const t = docTemplate(doc);
   const ls = [];
   for (const o of doc.layers || []) {
     const l = { ...o };
@@ -2753,6 +2782,7 @@ async function pieceFromDoc(doc, mirror) {
     }
     ls.push(l);
   }
+  await loadFonts(ls);
   const saved = { tpl, PW, PH, layers, cells, bgColor, bgColor2, bgClear, sel };
   try {
     tpl = t; PW = cm2px(t.w); PH = cm2px(t.h);
@@ -2825,6 +2855,7 @@ function drawCombPage(placed) {
 }
 
 async function updateComb() {
+  if (!$('combDlg').open) return;   // se cerró mientras se preparaba
   const mirror = $('sheetMirror').checked, paper = PAPERS[settings.paper];
   const gap = Math.max(+settings.gap || 0, settings.marks ? 0.7 : 0.2);
   const pieces = [];
@@ -2904,6 +2935,7 @@ $('combAdd').onchange = e => {
 };
 $('btnComb').onclick = openComb;
 $('combClose').onclick = () => $('combDlg').close();
+$('combDlg').addEventListener('close', () => { comb.items = []; comb.pages = []; });
 $('combPrev').onclick = () => { if (comb.page > 0) { comb.page--; updateComb(); } };
 $('combNext').onclick = () => { if (comb.page < comb.pages.length - 1) { comb.page++; updateComb(); } };
 async function combPngs() {
@@ -2911,7 +2943,7 @@ async function combPngs() {
   for (const placed of comb.pages) out.push(await toPng(drawCombPage(placed)));
   return out;
 }
-$('combPrint').onclick = () => busy(async () => printPngs(await combPngs(), comb.W, comb.H, 'Hoja combinada'));
+$('combPrint').onclick = () => printJob(combPngs, comb.W, comb.H, 'Hoja combinada');
 $('combDownload').onclick = () => busy(async () => {
   const pngs = await combPngs(), base = `hoja-combinada_${PAPERS[settings.paper].name}`;
   if (pngs.length === 1) { download(pngs[0], `${base}.png`); return; }
@@ -3210,7 +3242,8 @@ async function buildKit() {
   const saved = tpl;
   try {
     ids.forEach((id, i) => {
-      const t = allTemplates().find(v => v.id === id);
+      const t = id === saved.id ? saved : allTemplates().find(v => v.id === id);
+      if (!t) return;
       tpl = t;   // los dibujos de producto usan las medidas de la plantilla activa
       const cell = document.createElement('canvas'); cell.width = 1000; cell.height = 750;
       const type = t.mock || (t.shape === 'circle' ? 'plate' : 'flat');
