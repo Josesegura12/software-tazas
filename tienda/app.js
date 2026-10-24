@@ -94,7 +94,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
           <div class="qty"><button data-q="-1" aria-label="Menos">−</button><b id="detCant">1</b><button data-q="1" aria-label="Más">+</button></div>
           <button class="btn primary" id="detAdd">Agregar al carrito</button></div>
-        <p class="note">Después nos envías tu foto o diseño por WhatsApp. ¿Quieres verlo antes? <a href="../index.html" target="_blank" rel="noopener">Pruébalo en el editor</a>.</p>
+        <p class="note">Después nos envías tu foto o diseño por WhatsApp. ¿Quieres verlo antes? <a href="../index.html#producto=${encodeURIComponent(p.nombre)}" target="_blank" rel="noopener">Pruébalo en el editor</a>.</p>
       </div>`;
     d.onclick = e => {
       if (e.target === d || e.target.closest('[data-close]')) return closeDlg(d);

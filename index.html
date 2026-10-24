@@ -3901,13 +3901,33 @@ window.addEventListener('appinstalled', () => toast('¡Listo! Sublima Fácil que
 
 /* ---------- Inicio ---------- */
 new ResizeObserver(() => { if (tpl) { fit(); render(); } }).observe(stage);
+// Enlace desde la tienda o el ERP: index.html#producto=Taza 11 oz personalizada → abre esa plantilla
+function templateFromLink() {
+  const m = /producto=([^&]+)/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, '', location.pathname);
+  const norm = s => s.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/[^a-z0-9 ]/g, ' ');
+  const words = norm(decodeURIComponent(m[1])).split(/\s+/).filter(w => w.length > 1);
+  let best = null, bestScore = 0;
+  for (const t of allTemplates()) {
+    const n = norm(t.name);
+    if (!words.length || !n.includes(words[0])) continue;   // el tipo (taza, termo…) debe coincidir
+    const score = words.filter(w => n.includes(w)).length;
+    if (score > bestScore) { best = t; bestScore = score; }
+  }
+  if (best && best !== tpl) { setTemplate(best); toast(`Plantilla lista: ${best.name}. Sube tu imagen.`); }
+}
+
 (async () => {
   try {
     const d = await idb.get('kv', 'current');
-    if (d && ((d.layers && d.layers.length) || (d.cells && d.cells.length))) { await loadDoc(d); return; }
+    if (d && ((d.layers && d.layers.length) || (d.cells && d.cells.length))) await loadDoc(d);
   } catch {}
-  const last = store.get('sf_last', null);
-  setTemplate(allTemplates().find(t => t.id === last) || BASE[0]);
+  if (!tpl) {
+    const last = store.get('sf_last', null);
+    setTemplate(allTemplates().find(t => t.id === last) || BASE[0]);
+  }
+  templateFromLink();
 })();
 </script>
 </body>
