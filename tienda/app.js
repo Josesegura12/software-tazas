@@ -186,6 +186,22 @@
     if (CAT.productos.length) renderGrid();
     loadCart();
     saveCart();
+    avisoPago();
+  }
+  // Regreso desde Clip después de pagar con tarjeta
+  function avisoPago() {
+    const r = new URLSearchParams(location.search).get('pago');
+    if (!r) return;
+    history.replaceState(null, '', location.pathname + location.hash);
+    const ok = r === 'ok', box = document.createElement('div');
+    box.setAttribute('role', 'status');
+    box.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:1000;max-width:min(92vw,460px);padding:14px 18px;border-radius:14px;'
+      + 'box-shadow:0 10px 30px rgb(0 0 0/.25);font:600 15px Montserrat,system-ui,sans-serif;color:#fff;background:' + (ok ? '#1a8a4a' : '#c62828');
+    box.textContent = ok ? '✅ ¡Gracias! Tu pago se recibió. Te escribiremos por WhatsApp para confirmar tu pedido.'
+                         : '⚠️ El pago no se completó. Puedes intentarlo de nuevo con el mismo link o escribirnos por WhatsApp.';
+    box.onclick = () => box.remove();
+    document.body.appendChild(box);
+    setTimeout(() => box.remove(), 12000);
   }
   init();
 })();

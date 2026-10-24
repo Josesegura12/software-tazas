@@ -5,7 +5,7 @@
 /* ================= Constantes y utilidades ================= */
 const ESTADOS = ['Cotización', 'Anticipo', 'En diseño', 'En producción', 'Listo', 'Entregado', 'Cancelado'];
 const PENDIENTES = ['Cotización', 'Anticipo', 'En diseño', 'En producción', 'Listo'];
-const METODOS = ['Efectivo', 'Transferencia', 'Tarjeta'];
+const METODOS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Clip'];
 const CAT_GASTO = ['Compra de insumos', 'Renta', 'Luz', 'Internet y teléfono', 'Publicidad', 'Envíos', 'Mantenimiento de equipo', 'Sueldos', 'Otros'];
 const CAT_PROD = ['Tazas', 'Termos', 'Playeras', 'Cojines', 'Llaveros', 'Plumas', 'Impresión 3D', 'Otros'];
 const STORES = ['clientes', 'productos', 'insumos', 'movimientos', 'pedidos', 'gastos', 'ajustes'];
@@ -885,7 +885,8 @@ App.verPedido = id => {
     </tbody></table></div>
     <div class="grid g2 mt">
       <div><h3>💰 Pagos</h3>${(p.pagos || []).length ? `<ul class="list">${p.pagos.map((x, i) => `<li><span>${fdate(x.fecha)} · ${esc(x.metodo)}</span><span><b>${money(x.monto)}</b> <button class="btn sm danger" onclick="App.borrarPago('${id}',${i})" title="Quitar pago">×</button></span></li>`).join('')}</ul>` : '<p class="muted">Sin pagos registrados.</p>'}
-        ${p.estado !== 'Cancelado' ? `<button class="btn sm ok" onclick="App.formPago('${id}')">+ Registrar pago</button>` : ''}</div>
+        ${p.estado !== 'Cancelado' ? `<div class="btns"><button class="btn sm ok" onclick="App.formPago('${id}')">+ Registrar pago</button>${t.saldo > 0 ? `<button class="btn sm primary" onclick="App.clipCobrar('${id}')">💳 Cobrar con Clip</button>` : ''}</div>` : ''}
+        ${clipLinksHtml(p)}</div>
       <div class="totals"><ul class="list"><li><span>Subtotal</span><span>${money(t.subtotal)}</span></li>${t.descuento ? `<li><span>Descuento</span><span>− ${money(t.descuento)}</span></li>` : ''}
         <li class="big"><span>Total</span><span>${money(t.total)}</span></li><li><span>Pagado</span><span>${money(t.pagado)}</span></li>
         <li><span>Saldo</span><b style="color:${t.saldo > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(t.saldo)}</b></li><li class="small muted"><span>Costo estimado / ganancia</span><span>${money(t.costo)} / ${money(t.total - t.costo)}</span></li></ul></div>
@@ -899,6 +900,10 @@ App.verPedido = id => {
       : next && p.estado !== 'Cancelado' ? `<button class="btn primary" type="button" onclick="App.estado('${id}','${esc(next)}')">➜ ${esc(next)}</button>` : ''}`, true);
   m.dataset.pedido = id;
   $('#selEstado').onchange = e => App.estado(id, e.target.value);
+  // Si hay links de Clip pendientes, se revisan solos al abrir el pedido
+  if (clipListo() && (p.clip || []).some(l => !l.registrado && !['CHECKOUT_CANCELLED', 'CHECKOUT_EXPIRED'].includes(l.estado))) {
+    clipRevisar(id, false).then(n => { if (n) { toast(`¡Pago con Clip recibido en el pedido #${p.folio}!`); render(); if (modal().dataset.pedido === id) App.verPedido(id); } }).catch(() => {});
+  }
 };
 App.formPago = (id, desdeConversion) => {
   const p = pedido(id);
@@ -1047,6 +1052,165 @@ App.cobrar = async () => {
     openModal('✅ Venta registrada', `<p style="font-size:16px">Venta <b>#${p.folio}</b> por <b>${money(t.total)}</b> (${esc(posMet)}).</p><p class="muted">El inventario ya se descontó.</p>`,
       `<button class="btn" type="button" onclick="App.imprimir('${p.id}')">🖨️ Imprimir nota</button>${telCliente(p) ? `<a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(telCliente(p), textoWa(p)))}">WhatsApp</a>` : ''}<button class="btn primary" type="button" onclick="App.close()">Nueva venta</button>`);
   } catch (e) { fail(e, 'No se pudo registrar la venta. Intenta de nuevo.'); }
+};
+
+/* ================= PAGOS CON CLIP ================= */
+// Las claves se guardan solo en este navegador (localStorage), fuera de la base de datos:
+// así no viajan en los respaldos ni en el catálogo de la tienda.
+const CLIP_API = 'https://api.payclip.com/v2/checkout';
+const CLIP_ESTADOS = {
+  CHECKOUT_CREATED: ['Esperando pago', 'warn'], CHECKOUT_PENDING: ['Pago en proceso', 'warn'],
+  CHECKOUT_COMPLETED: ['Pagado', 'ok'], CHECKOUT_CANCELLED: ['Cancelado', 'bad'], CHECKOUT_EXPIRED: ['Vencido', 'bad'],
+};
+const clipCfg = () => { try { return JSON.parse(localStorage.getItem('erp_clip') || 'null'); } catch { return null; } };
+const clipListo = () => { const c = clipCfg(); return !!(c && c.key && c.secret); };
+const clipPrueba = () => /^test_/i.test((clipCfg() || {}).key || '');
+const tiendaUrl = q => new URL('../tienda/' + (q || ''), location.href).href;
+async function clipFetch(url, opts = {}) {
+  const c = clipCfg();
+  if (!c || !c.key || !c.secret) throw new Error('Primero guarda tus claves de Clip en Configuración.');
+  let res;
+  try {
+    res = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + btoa(`${c.key}:${c.secret}`) } });
+  } catch { throw new Error('No hay conexión con Clip. Revisa tu internet e intenta de nuevo.'); }
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) throw new Error('Clip rechazó tus claves. Revisa la API key y la clave secreta en Configuración.');
+  if (!res.ok) { const e = new Error(data.detail || data.message || `Clip respondió con error ${res.status}.`); e.status = res.status; throw e; }
+  return data;
+}
+const clipBadge = st => { const [t, k] = CLIP_ESTADOS[st] || [st || '—', '']; return `<span class="badge ${k}">${esc(t)}</span>`; };
+
+// Crea el link de pago de un pedido por el monto indicado y lo guarda en el pedido
+async function clipCrearLink(p, monto) {
+  const n = neg(), tel = String(telCliente(p) || '').replace(/\D/g, '').slice(-10);
+  const body = {
+    amount: r2(monto), currency: 'MXN',
+    purchase_description: `${n.nombre || 'Pedido'} · ${p.estado === 'Cotización' ? 'Cotización' : 'Pedido'} #${p.folio || ''}`.slice(0, 250),
+    redirection_url: { success: tiendaUrl('?pago=ok'), error: tiendaUrl('?pago=error'), default: tiendaUrl() },
+    metadata: { external_reference: String(p.id).slice(0, 36) },
+  };
+  const cli = cliente(p.clienteId);
+  if (cli) body.metadata.customer_info = Object.assign({ name: cli.nombre }, tel.length === 10 ? { phone: +tel } : {}, cli.correo ? { email: cli.correo } : {});
+  const r = await clipFetch(CLIP_API, { method: 'POST', body: JSON.stringify(body) });
+  const link = { id: r.payment_request_id, url: r.payment_request_url, qr: r.qr_image_url, monto: r2(monto), estado: r.status,
+                 creado: new Date().toISOString(), vence: r.expires_at, prueba: clipPrueba(), registrado: false };
+  const q = clone(pedido(p.id));
+  q.clip = (q.clip || []).concat(link);
+  await commit([['pedidos', q]]);
+  return link;
+}
+
+// Revisa en Clip los links que siguen pendientes; si alguno ya se pagó, registra el pago en el pedido
+async function clipRevisar(id, avisar = true) {
+  const p = pedido(id);
+  const pend = (p.clip || []).filter(l => !l.registrado && !['CHECKOUT_CANCELLED', 'CHECKOUT_EXPIRED'].includes(l.estado));
+  if (!pend.length) { if (avisar) toast('No hay links de pago pendientes.'); return 0; }
+  const q = clone(p);
+  let nuevos = 0, cambios = false;
+  for (const l of pend) {
+    const r = await clipFetch(`${CLIP_API}/${encodeURIComponent(l.id)}`);
+    const ql = q.clip.find(x => x.id === l.id);
+    if (r.status && r.status !== ql.estado) { ql.estado = r.status; cambios = true; }
+    if (r.status === 'CHECKOUT_COMPLETED' && !ql.registrado) {
+      ql.registrado = true; cambios = true; nuevos++;
+      q.pagos = q.pagos || [];
+      q.pagos.push({ id: uid(), fecha: today(), monto: ql.monto, metodo: 'Clip', clipId: ql.id });
+      if (q.estado === 'Cotización') { q.estado = 'Anticipo'; q.fechaVenta = q.fechaVenta || today(); (q.historial = q.historial || []).push({ fecha: new Date().toISOString(), estado: 'Anticipo' }); }
+    }
+  }
+  if (cambios) await commit([['pedidos', q]]);
+  if (avisar) toast(nuevos ? `¡Pago con Clip recibido! Se registró en el pedido #${q.folio}.` : 'Clip aún no reporta el pago.', nuevos ? 'ok' : 'warn');
+  return nuevos;
+}
+
+function clipLinksHtml(p) {
+  const links = p.clip || [];
+  if (!links.length) return '';
+  return `<ul class="list mt">${links.slice().reverse().map(l => `<li style="flex-wrap:wrap;gap:6px">
+      <span>💳 <b>${money(l.monto)}</b> ${clipBadge(l.estado)}${l.prueba ? ' <span class="badge ej">prueba</span>' : ''}<br><span class="small muted">${fdate(ymd(new Date(l.creado)))}</span></span>
+      <span class="btns">
+        <button class="btn sm" type="button" onclick="App.clipCopiar('${esc(l.url)}')">Copiar</button>
+        <a class="btn sm wa" target="_blank" rel="noopener" href="${esc(waLink(telCliente(p), clipTextoWa(p, l)))}">WhatsApp</a>
+        <button class="btn sm" type="button" onclick="App.clipQr('${p.id}','${esc(l.id)}')">QR</button>
+      </span></li>`).join('')}</ul>
+    ${links.some(l => !l.registrado && !['CHECKOUT_CANCELLED', 'CHECKOUT_EXPIRED'].includes(l.estado)) ? `<button class="btn sm mt" type="button" onclick="App.clipRevisar('${p.id}')">🔄 Revisar si ya pagó</button>` : ''}`;
+}
+function clipTextoWa(p, l) {
+  return `¡Hola ${nomCliente(p)}! 👋\nAquí está tu link para pagar con tarjeta tu ${p.estado === 'Cotización' ? 'cotización' : 'pedido'} #${p.folio} de *${neg().nombre}*:\n\n💳 ${money(l.monto)}\n${l.url}\n\nEs un pago seguro con Clip. ¡Gracias! 💜`;
+}
+
+App.clipCopiar = async url => {
+  try { await navigator.clipboard.writeText(url); toast('Link copiado'); }
+  catch { window.prompt('Copia el link:', url); }
+};
+App.clipQr = (id, linkId) => {
+  const p = pedido(id), l = (p.clip || []).find(x => x.id === linkId);
+  if (!l) return;
+  openModal(`Pagar ${money(l.monto)} con Clip`, `<div style="text-align:center">
+      <p class="muted">Muestra este código al cliente: lo escanea con su celular y paga con tarjeta.</p>
+      ${l.qr ? `<img src="${esc(l.qr)}" alt="Código QR de pago" style="width:260px;max-width:100%;background:#fff;border-radius:12px;padding:8px">` : ''}
+      <p class="small" style="word-break:break-all"><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.url)}</a></p></div>`,
+    `<button class="btn" type="button" onclick="App.verPedido('${id}')">Volver al pedido</button><button class="btn primary" type="button" onclick="App.clipRevisar('${id}')">🔄 Revisar si ya pagó</button>`);
+};
+App.clipRevisar = async id => {
+  try { await clipRevisar(id); render(); App.verPedido(id); }
+  catch (e) { fail(e, e.message); }
+};
+App.clipCobrar = id => {
+  const p = pedido(id), t = tot(p);
+  if (!clipListo()) { toast('Primero guarda tus claves de Clip en Configuración.', 'warn'); go('config'); closeModal(); return; }
+  openModal(`Cobrar con Clip · #${p.folio}`, `<form id="mf" class="fgrid">
+      ${clipPrueba() ? '<div class="full alert warn">Estás en <b>modo prueba</b> (claves test_): el link no cobra dinero real.</div>' : ''}
+      <div class="full muted">Total ${money(t.total)} · Pagado ${money(t.pagado)} · <b>Saldo ${money(t.saldo)}</b></div>
+      <div class="full"><label class="f">Monto a cobrar (MXN)</label><input name="monto" type="number" step="0.01" min="1" required value="${t.saldo > 0 ? t.saldo : t.total}">
+        <div class="hint">Puedes cobrar todo o solo el anticipo. Clip cobra su comisión de este monto.</div></div>
+    </form>`, `<button class="btn" type="button" onclick="App.verPedido('${id}')">Cancelar</button><button class="btn primary" form="mf" id="clipGo">💳 Crear link de pago</button>`);
+  $('#mf').onsubmit = async ev => {
+    ev.preventDefault();
+    const monto = r2(num(formData(ev.target).monto));
+    if (monto < 1) return toast('El monto mínimo en Clip es $1.00', 'warn');
+    $('#clipGo').disabled = true; $('#clipGo').textContent = 'Creando link…';
+    try {
+      const l = await clipCrearLink(p, monto);
+      render();
+      toast('Link de pago creado');
+      App.clipQr(id, l.id);
+    } catch (e) { $('#clipGo').disabled = false; $('#clipGo').textContent = '💳 Crear link de pago'; fail(e, e.message); }
+  };
+};
+
+// Configuración de Clip
+function clipConfigHtml() {
+  const c = clipCfg() || {};
+  return `<div class="card mt"><h2>💳 Pagos con tarjeta (Clip)</h2>
+    <p class="small muted">Crea links de pago y códigos QR para que tus clientes paguen con tarjeta. Tus claves se guardan <b>solo en este navegador</b>: no van en los respaldos ni en la tienda. Si usas otra computadora, escríbelas ahí también.</p>
+    ${c.key ? `<p>${clipPrueba() ? '<span class="badge warn">Modo prueba</span> Los cobros no son reales.' : '<span class="badge ok">Modo real</span> Los cobros son reales.'}</p>` : ''}
+    <form id="clipF" class="fgrid">
+      <div><label class="f">API key</label><input name="key" autocomplete="off" spellcheck="false" value="${esc(c.key || '')}" placeholder="test_… o tu clave real"></div>
+      <div><label class="f">Clave secreta</label><input name="secret" type="password" autocomplete="off" value="${esc(c.secret || '')}"></div>
+      <div class="full hint">Las encuentras en tu panel de Clip → Desarrolladores (dashboard.clip.mx).</div>
+    </form>
+    <div class="btns mt"><button class="btn primary" type="button" onclick="App.clipGuardar()">Guardar claves</button>
+      <button class="btn" type="button" onclick="App.clipProbar()">Probar conexión</button>
+      ${c.key ? '<button class="btn danger" type="button" onclick="App.clipQuitar()">Quitar claves</button>' : ''}</div>
+  </div>`;
+}
+App.clipGuardar = () => {
+  const d = formData($('#clipF'));
+  const key = (d.key || '').trim(), secret = (d.secret || '').trim();
+  if (!key || !secret) return toast('Escribe la API key y la clave secreta.', 'warn');
+  try { localStorage.setItem('erp_clip', JSON.stringify({ key, secret })); toast('Claves de Clip guardadas en este navegador'); render(); }
+  catch (e) { fail(e, 'Este navegador no permitió guardar las claves.'); }
+};
+App.clipProbar = async () => {
+  App.clipGuardar();
+  if (!clipListo()) return;
+  try { await clipFetch(`${CLIP_API}/00000000-0000-0000-0000-000000000000`); toast('Conexión con Clip correcta'); }
+  catch (e) { if (e.status === 404) toast(`Conexión con Clip correcta${clipPrueba() ? ' (modo prueba)' : ''}`); else fail(e, e.message); }
+};
+App.clipQuitar = () => {
+  if (!ask('¿Quitar las claves de Clip de este navegador?')) return;
+  localStorage.removeItem('erp_clip'); toast('Claves quitadas'); render();
 };
 
 /* ================= 7. GASTOS Y COMPRAS ================= */
@@ -1321,6 +1485,7 @@ VIEWS.config = () => {
         <div class="btns"><button class="btn primary" onclick="App.exportarCatalogo()">⬇️ Exportar catálogo para la tienda</button><a class="btn" href="../tienda/" target="_blank" rel="noopener">Ver tienda</a></div>
       </div>
     </div>
+    ${clipConfigHtml()}
     <div class="card mt"><h2>🧹 Limpieza</h2>
       <div class="btns">${hayEjemplos() ? '<button class="btn" onclick="App.borrarEjemplos()">Borrar datos de ejemplo</button>' : '<span class="muted small">No hay datos de ejemplo.</span>'}
       <button class="btn danger" onclick="App.borrarTodo()">Borrar TODA la información</button></div></div>`;
