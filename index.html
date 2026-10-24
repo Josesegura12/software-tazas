@@ -196,6 +196,7 @@
     <button class="hbtn" id="btnNew">✨ Nuevo</button>
     <button class="hbtn" id="btnDesigns">📁 Mis diseños</button>
     <button class="hbtn" id="btnMockTop">👁 Vista previa</button>
+    <button class="hbtn" id="btn3d">🧊 Impresión 3D</button>
     <button class="hbtn primary" id="btnPrintTop">🖨 Imprimir</button>
   </div>
 </header>
@@ -509,6 +510,72 @@
   </div>
   <div class="actions">
     <button class="btn primary" id="mockDownload">⬇ Descargar imagen (JPG)</button>
+  </div>
+</dialog>
+
+<!-- Impresión 3D -->
+<dialog id="s3Dlg" class="wide">
+  <div class="dlg-head">
+    <div><h3>Impresión 3D (STL)</h3><span class="note">Convierte tu imagen en una litofanía o una placa con relieve para tu Creality Hi.</span></div>
+    <button class="x" id="s3Close" title="Cerrar">✕</button>
+  </div>
+  <div class="split">
+    <div>
+      <div class="pv-wrap"><canvas id="s3Pv" style="image-rendering:auto"></canvas></div>
+      <p id="s3PvNote" class="note" style="text-align:center"></p>
+    </div>
+    <div>
+      <label class="f">Usar</label>
+      <select id="s3Src">
+        <option value="all">El diseño completo</option>
+        <option value="sel">Solo la imagen seleccionada</option>
+      </select>
+      <label class="f">Tipo de pieza</label>
+      <select id="s3Type">
+        <option value="litho">Litofanía (la foto se ve con luz atrás)</option>
+        <option value="relief">Relieve (placa, letrero, llavero)</option>
+      </select>
+      <div id="s3Litho">
+        <label class="f">Forma</label>
+        <select id="s3Shape"><option value="flat">Plana</option><option value="curve">Curva</option></select>
+        <div id="s3ArcWrap">
+          <label class="f">Curvatura <output id="s3ArcOut">120°</output></label>
+          <input type="range" id="s3Arc" min="60" max="180" value="120">
+        </div>
+        <div class="two">
+          <div><label class="f">Grosor mínimo (mm)</label><input type="number" id="s3Min" value="0.8" min="0.4" max="3" step="0.1"></div>
+          <div><label class="f">Grosor máximo (mm)</label><input type="number" id="s3Max" value="3" min="1" max="8" step="0.1"></div>
+        </div>
+        <label class="f">Marco (mm)</label>
+        <input type="number" id="s3Frame" value="3" min="0" max="15" step="0.5">
+      </div>
+      <div id="s3Relief" hidden>
+        <label class="f">Estilo</label>
+        <select id="s3Style">
+          <option value="two">Dos niveles (para cambiar de color)</option>
+          <option value="grad">Degradado (más detalle)</option>
+        </select>
+        <div class="two">
+          <div><label class="f">Base (mm)</label><input type="number" id="s3Base" value="2" min="0.4" max="10" step="0.2"></div>
+          <div><label class="f">Relieve (mm)</label><input type="number" id="s3Relief2" value="1.2" min="0.2" max="10" step="0.2"></div>
+        </div>
+        <div id="s3ThrWrap">
+          <label class="f">Qué partes suben <output id="s3ThrOut">50%</output></label>
+          <input type="range" id="s3Thr" min="5" max="95" value="50">
+        </div>
+      </div>
+      <div class="two">
+        <div><label class="f">Ancho (mm)</label><input type="number" id="s3Width" value="100" min="10" max="256" step="1"></div>
+        <div><label class="f">Calidad</label>
+          <select id="s3Quality"><option value="0.3">Normal</option><option value="0.2" selected>Alta</option><option value="0.15">Máxima</option></select>
+        </div>
+      </div>
+      <label class="check" style="margin-top:10px"><input type="checkbox" id="s3Invert"> Invertir claro / oscuro</label>
+      <label class="check"><input type="checkbox" id="s3Mirror"> Espejo</label>
+      <p id="s3Info" class="note" style="font-weight:600;color:var(--text)"></p>
+      <button class="btn primary" id="s3Download">⬇ Descargar STL</button>
+      <p id="s3Tips" class="note"></p>
+    </div>
   </div>
 </dialog>
 
@@ -2319,6 +2386,199 @@ $('btnMockTop').onclick = openMock;
 $('mockClose').onclick = () => $('mockDlg').close();
 $('mockRot').oninput = drawMock;
 $('mockDownload').onclick = () => $('mockCv').toBlob(b => download(b, `${fileName()}_vista-previa.jpg`), 'image/jpeg', 0.92);
+
+/* ---------- Impresión 3D (STL) ---------- */
+const CREALITY_HI_MM = 256; // cama de 260 × 260 mm, con un pequeño margen
+const s3 = { src: null, m: null };
+const num = id => +$(id).value || 0;
+const isLitho = () => $('s3Type').value === 'litho';
+
+function source3d() {
+  if ($('s3Src').value === 'sel' && sel && sel.type === 'image') {
+    const { w, h } = layerSize(sel), f = Math.min(1, 1600 / Math.max(w, h));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * f)); c.height = Math.max(1, Math.round(h * f));
+    const x = c.getContext('2d');
+    x.filter = adjFilter(sel);
+    x.drawImage(sel.cut || sel.orig, 0, 0, c.width, c.height);
+    return c;
+  }
+  return exportCanvas({ bleed: false, scale: Math.min(1, 1600 / Math.max(PW, PH)) });
+}
+
+// Imagen → mapa de alturas en mm (una altura por punto de la cuadrícula)
+function heightmap() {
+  const src = s3.src, step = +$('s3Quality').value;
+  const Wmm = Math.min(CREALITY_HI_MM, Math.max(10, num('s3Width')));
+  const nx = Math.max(2, Math.round(Wmm / step) + 1);
+  const ny = Math.max(2, Math.round(Wmm * src.height / src.width / step) + 1);
+  const c = document.createElement('canvas'); c.width = nx; c.height = ny;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.fillStyle = '#fff'; x.fillRect(0, 0, nx, ny);
+  if ($('s3Mirror').checked) { x.translate(nx, 0); x.scale(-1, 1); }
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0, nx, ny);
+  const d = x.getImageData(0, 0, nx, ny).data, H = new Float32Array(nx * ny), inv = $('s3Invert').checked;
+  const lum = k => { const L = (0.299 * d[k * 4] + 0.587 * d[k * 4 + 1] + 0.114 * d[k * 4 + 2]) / 255; return inv ? 1 - L : L; };
+  const m = { H, nx, ny, step, litho: isLitho() };
+  if (m.litho) {
+    // Más oscuro = más grueso = deja pasar menos luz
+    const tmin = Math.max(0.4, num('s3Min')), tmax = Math.max(tmin + 0.4, num('s3Max')), fb = Math.round(num('s3Frame') / step);
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const k = j * nx + i, frame = i < fb || j < fb || i >= nx - fb || j >= ny - fb;
+      H[k] = frame ? tmax : tmin + (1 - lum(k)) * (tmax - tmin);
+    }
+    Object.assign(m, { tmin, tmax, top: tmax });
+  } else {
+    // Lo oscuro sube; en dos niveles queda un escalón exacto para cambiar de color
+    const base = Math.max(0.4, num('s3Base')), rel = Math.max(0.2, num('s3Relief2'));
+    const two = $('s3Style').value === 'two', thr = num('s3Thr') / 100;
+    for (let k = 0; k < nx * ny; k++) {
+      const L = lum(k);
+      H[k] = base + (two ? (L < thr ? rel : 0) : (1 - L) * rel);
+    }
+    Object.assign(m, { base, rel, two, top: base + rel });
+  }
+  return m;
+}
+
+function draw3dPreview(m) {
+  const { H, nx, ny, step } = m, pv = $('s3Pv');
+  pv.width = nx; pv.height = ny;
+  const x = pv.getContext('2d'), img = x.createImageData(nx, ny), o = img.data;
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i;
+    let r, g, b;
+    if (m.litho) {
+      // Simula la pieza con una lámpara atrás
+      const t = Math.exp(-(H[k] - m.tmin) * 1.25);
+      r = 255 * t; g = 236 * t; b = 200 * t;
+    } else {
+      // Relieve iluminado desde arriba a la izquierda
+      const hl = H[j * nx + Math.max(0, i - 1)], hr = H[j * nx + Math.min(nx - 1, i + 1)];
+      const hu = H[Math.max(0, j - 1) * nx + i], hd = H[Math.min(ny - 1, j + 1) * nx + i];
+      const dx = (hr - hl) / (2 * step), dy = (hd - hu) / (2 * step);
+      const len = Math.hypot(dx, dy, 1), shade = Math.max(0, (dx * 0.5 + dy * 0.5 + 0.7) / len / 1.05);
+      const up = m.two && H[k] > m.base + 0.01;
+      const [cr, cg, cb] = up ? [194, 24, 122] : [225, 222, 230];
+      r = cr * (0.35 + 0.65 * shade); g = cg * (0.35 + 0.65 * shade); b = cb * (0.35 + 0.65 * shade);
+    }
+    o[k * 4] = r; o[k * 4 + 1] = g; o[k * 4 + 2] = b; o[k * 4 + 3] = 255;
+  }
+  x.putImageData(img, 0, 0);
+  pv.style.background = m.litho ? '#2a2018' : '#fff';
+}
+
+function curvedOn() { return isLitho() && $('s3Shape').value === 'curve'; }
+function update3d() {
+  $('s3Litho').hidden = !isLitho();
+  $('s3Relief').hidden = isLitho();
+  $('s3ArcWrap').hidden = !curvedOn();
+  $('s3ThrWrap').hidden = $('s3Style').value !== 'two';
+  setOut('s3ArcOut', $('s3Arc').value + '°'); setOut('s3ThrOut', $('s3Thr').value + '%');
+  const m = s3.m = heightmap();
+  draw3dPreview(m);
+  const W = (m.nx - 1) * m.step, Hh = (m.ny - 1) * m.step;
+  const per = 2 * (m.nx - 1) + 2 * (m.ny - 1), top = 2 * (m.nx - 1) * (m.ny - 1);
+  const tris = top + (curvedOn() ? top : per) + 2 * per;
+  let info = `Tamaño: ${W.toFixed(0)} × ${Hh.toFixed(0)} mm, alto ${m.top.toFixed(1)} mm · archivo de ${(tris * 50 / 1048576).toFixed(1)} MB.`;
+  if (Hh > CREALITY_HI_MM) info += ' ⚠ Es más alta que la cama de la Creality Hi (260 mm): reduce el ancho.';
+  $('s3Info').textContent = info;
+  $('s3PvNote').textContent = m.litho ? 'Así se verá con una luz atrás.' : m.two ? 'En rosa: lo que sube (segundo color).' : 'Vista del relieve.';
+  $('s3Tips').innerHTML = m.litho
+    ? '<b>Consejos:</b> PLA blanco, relleno 100%, capa de 0.12 mm. ' + (curvedOn() ? 'La curva ya va de pie sobre la cama.' : 'Puedes imprimirla acostada o de pie.')
+    : m.two
+      ? `<b>Cambio de color:</b> en Creality Print agrega un cambio de filamento a <b>${m.base.toFixed(2)} mm</b> de altura (o asigna el segundo color con el CFS). La base sale de un color y el relieve de otro.`
+      : '<b>Consejos:</b> capa de 0.12–0.16 mm para que se vea el detalle.';
+}
+
+// Malla cerrada: superficie con relieve + fondo + paredes, en STL binario
+function buildStl(m) {
+  const { H, nx, ny, step } = m, curved = curvedOn();
+  const W = (nx - 1) * step, Hh = (ny - 1) * step;
+  const arc = curved ? num('s3Arc') * Math.PI / 180 : 0, R = curved ? W / arc : 0;
+  const T = new Float32Array(nx * ny * 3), Bt = new Float32Array(nx * ny * 3);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i, z = (ny - 1 - j) * step;
+    if (curved) {
+      const t = (i / (nx - 1) - 0.5) * arc, s = Math.sin(t), c = Math.cos(t), r = R + H[k];
+      T.set([r * s, r * c - R, z], k * 3); Bt.set([R * s, 0 + R * c - R, z], k * 3);
+    } else {
+      T.set([i * step, z, H[k]], k * 3); Bt.set([i * step, z, 0], k * 3);
+    }
+  }
+  const P = (A, i, j) => { const k = (j * nx + i) * 3; return [A[k], A[k + 1], A[k + 2]]; };
+  const per = 2 * (nx - 1) + 2 * (ny - 1), top = 2 * (nx - 1) * (ny - 1);
+  const total = top + (curved ? top : per) + 2 * per;
+  const buf = new ArrayBuffer(84 + total * 50), dv = new DataView(buf);
+  const head = 'Sublima Facil - STL';
+  for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
+  dv.setUint32(80, total, true);
+  let off = 84;
+  // Cada triángulo se orienta hacia afuera según la dirección esperada e
+  const tri = (a, b, c, e) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let nx_ = uy * vz - uz * vy, ny_ = uz * vx - ux * vz, nz_ = ux * vy - uy * vx;
+    if (nx_ * e[0] + ny_ * e[1] + nz_ * e[2] < 0) { [b, c] = [c, b]; nx_ = -nx_; ny_ = -ny_; nz_ = -nz_; }
+    const l = Math.hypot(nx_, ny_, nz_) || 1;
+    for (const v of [nx_ / l, ny_ / l, nz_ / l, ...a, ...b, ...c]) { dv.setFloat32(off, v, true); off += 4; }
+    dv.setUint16(off, 0, true); off += 2;
+  };
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const outward = i => { if (!curved) return [0, 0, 1]; const t = ((i + 0.5) / (nx - 1) - 0.5) * arc; return [Math.sin(t), Math.cos(t), 0]; };
+  for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+    const e = outward(i), ne = [-e[0], -e[1], -e[2]];
+    tri(P(T, i, j), P(T, i + 1, j), P(T, i + 1, j + 1), e);
+    tri(P(T, i, j), P(T, i + 1, j + 1), P(T, i, j + 1), e);
+    if (curved) {
+      tri(P(Bt, i, j), P(Bt, i + 1, j), P(Bt, i + 1, j + 1), ne);
+      tri(P(Bt, i, j), P(Bt, i + 1, j + 1), P(Bt, i, j + 1), ne);
+    }
+  }
+  // Contorno en orden alrededor de la pieza
+  const ring = [];
+  for (let i = 0; i < nx; i++) ring.push([i, 0]);
+  for (let j = 1; j < ny; j++) ring.push([nx - 1, j]);
+  for (let i = nx - 2; i >= 0; i--) ring.push([i, ny - 1]);
+  for (let j = ny - 2; j >= 1; j--) ring.push([0, j]);
+  if (!curved) {
+    const C = [W / 2, Hh / 2, 0];
+    for (let r = 0; r < ring.length; r++) {
+      const p = ring[r], q = ring[(r + 1) % ring.length];
+      tri(C, P(Bt, p[0], p[1]), P(Bt, q[0], q[1]), [0, 0, -1]);
+    }
+  }
+  for (let r = 0; r < ring.length; r++) {
+    const [pi, pj] = ring[r], [qi, qj] = ring[(r + 1) % ring.length];
+    const e = pj === qj
+      ? (pj === 0 ? sub(P(Bt, pi, 0), P(Bt, pi, 1)) : sub(P(Bt, pi, ny - 1), P(Bt, pi, ny - 2)))
+      : (pi === 0 ? sub(P(Bt, 0, pj), P(Bt, 1, pj)) : sub(P(Bt, nx - 1, pj), P(Bt, nx - 2, pj)));
+    tri(P(T, pi, pj), P(T, qi, qj), P(Bt, qi, qj), e);
+    tri(P(T, pi, pj), P(Bt, qi, qj), P(Bt, pi, pj), e);
+  }
+  return new Blob([buf], { type: 'model/stl' });
+}
+
+function open3d() {
+  if (!needDesign()) return;
+  $('s3Src').value = sel && sel.type === 'image' ? 'sel' : 'all';
+  s3.src = source3d();
+  update3d();
+  $('s3Dlg').showModal();
+}
+let s3T;
+const update3dSoon = () => { clearTimeout(s3T); s3T = setTimeout(update3d, 120); };
+$('btn3d').onclick = open3d;
+$('s3Close').onclick = () => $('s3Dlg').close();
+$('s3Src').onchange = () => { s3.src = source3d(); update3d(); };
+document.querySelectorAll('#s3Dlg input, #s3Dlg select').forEach(el => {
+  if (el.id !== 's3Src') el.addEventListener('input', update3dSoon);
+});
+$('s3Download').onclick = () => busy(async () => {
+  const m = s3.m || heightmap();
+  const kind = m.litho ? (curvedOn() ? 'litofania-curva' : 'litofania') : 'relieve';
+  download(buildStl(m), `${fileName()}_${kind}_${Math.round((m.nx - 1) * m.step)}mm.stl`);
+});
 
 /* ---------- Inicio ---------- */
 new ResizeObserver(() => { if (tpl) { fit(); render(); } }).observe(stage);
