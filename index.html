@@ -500,6 +500,7 @@
       <button id="btnPrint" class="btn primary">🖨 Editor de impresión</button>
       <button id="btnMock" class="btn">👁 Ver en el producto</button>
       <button id="btnDownload" class="btn">⬇ Descargar PNG (1 pieza)</button>
+      <button id="btnQuote" class="btn" title="Guarda el diseño y abre una cotización en Mi negocio">💲 Cotizar este diseño</button>
       <p class="note">Se guarda a 300 DPI con la medida exacta del producto.</p>
     </section>
   </aside>
@@ -1893,6 +1894,23 @@ $('btnUpload').onclick = () => pickFiles({ replace: true });
 $('btnAddImg').onclick = () => pickFiles({});
 $('btnAddText').onclick = addText;
 $('btnHelp').onclick = () => $('helpDlg').showModal();
+// Cotizar: guarda el diseño en "Mis diseños" y abre Mi negocio con una cotización ya llena
+$('btnQuote').onclick = () => {
+  if (!needDesign()) return;
+  const fecha = new Date().toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' });
+  const name = `Cotización ${tpl.name} ${fecha}`;
+  const textos = layers.filter(l => l.type === 'text').map(l => l.text.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  // Primero se deja la cotización y luego se abre Mi negocio, que la lee al iniciar
+  store.set('sf_cotizar', {
+    t: Date.now(), producto: tpl.name, cantidad: 1,
+    personalizacion: textos.length ? 'Texto: ' + textos.join(' / ') : 'Diseño personalizado',
+    notas: `Diseño hecho en el editor: ${tpl.name} (${fmt(tpl.w)} × ${fmt(tpl.h)} cm). Guardado en “Mis diseños” como “${name}”.`,
+  });
+  if (!window.open('erp/#pedidos', '_blank')) toast('Permite las ventanas emergentes para abrir Mi negocio.', 'warn');
+  const thumb = exportCanvas({ bleed: false, scale: Math.min(1, 240 / Math.max(PW, PH)) }).toDataURL('image/png');
+  idb.put('designs', { id: 'd' + Date.now(), name, date: Date.now(), product: tpl.name, thumb, doc: docData() })
+    .catch(() => toast('No se pudo guardar el diseño en "Mis diseños"; descárgalo para no perderlo.', 'warn'));
+};
 $('helpClose').onclick = () => $('helpDlg').close();
 
 /* Diseños rápidos: fondo, textos y adornos listos para cambiar; las fotos que ya estén se conservan */

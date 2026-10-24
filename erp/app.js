@@ -749,11 +749,11 @@ function itemRow(it = {}) {
     <input class="ln-notas" value="${esc(it.notas || '')}" placeholder="Personalización: nombre, foto, colores…">
     <button type="button" class="x" title="Quitar">×</button></div>`;
 }
-App.formPedido = (id, tipo, clienteId) => {
+App.formPedido = (id, tipo, clienteId, preset) => {
   const nuevo = !id;
   const p = id ? clone(pedido(id)) : {
-    id: uid(), folio: null, estado: tipo === 'cotizacion' ? 'Cotización' : 'Anticipo', items: [], descuento: 0, pagos: [], fecha: today(),
-    fechaEntrega: addDays(today(), 3), notas: '', historial: [], descontado: false, origen: 'pedido', clienteId: clienteId || ''
+    id: uid(), folio: null, estado: tipo === 'cotizacion' ? 'Cotización' : 'Anticipo', items: (preset && preset.items) || [], descuento: 0, pagos: [], fecha: today(),
+    fechaEntrega: addDays(today(), 3), notas: (preset && preset.notas) || '', historial: [], descontado: false, origen: 'pedido', clienteId: clienteId || ''
   };
   const clis = S.clientes.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
   const titulo = nuevo ? (tipo === 'cotizacion' ? 'Nueva cotización' : 'Nuevo pedido') : `Editar ${p.estado === 'Cotización' ? 'cotización' : 'pedido'} #${p.folio}`;
@@ -1455,5 +1455,28 @@ async function init() {
   }
   refreshBrand();
   go(location.hash.slice(1) || 'panel');
+  cotizacionDesdeEditor();
+}
+
+// El editor deja aquí el diseño a cotizar ("Cotizar este diseño"); se abre una cotización ya llena
+function cotizacionDesdeEditor() {
+  let d;
+  try { d = JSON.parse(localStorage.getItem('sf_cotizar') || 'null'); localStorage.removeItem('sf_cotizar'); } catch { return; }
+  if (!d || Date.now() - (d.t || 0) > 10 * 60 * 1000) return;
+  const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ');
+  const words = norm(d.producto).split(/\s+/).filter(w => w.length > 1);
+  let best = null, bestScore = 0;
+  for (const p of S.productos) {
+    const n = norm(p.nombre);
+    if (!words.length || !n.includes(words[0])) continue;   // el tipo de producto (taza, termo…) debe coincidir
+    const score = words.filter(w => n.includes(w)).length;
+    if (score > bestScore) { best = p; bestScore = score; }
+  }
+  const item = best
+    ? { productoId: best.id, cant: d.cantidad || 1, precio: best.precio, notas: d.personalizacion || '' }
+    : { productoId: '', cant: d.cantidad || 1, precio: '', notas: d.producto + (d.personalizacion ? ' · ' + d.personalizacion : '') };
+  go('pedidos');
+  App.formPedido(null, 'cotizacion', '', { items: [item], notas: d.notas || '' });
+  toast(best ? `Cotización lista con “${best.nombre}”. Elige el cliente y guarda.` : 'Cotización lista: escribe el precio, elige el cliente y guarda.');
 }
 document.addEventListener('DOMContentLoaded', init);
