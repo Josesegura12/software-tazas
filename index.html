@@ -102,6 +102,21 @@
     display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
     padding: 8px 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 13px; color: var(--muted);
   }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 6px 14px 8px;
+    background: var(--panel); font-size: 12px; color: var(--muted);
+  }
+  .legend b { color: var(--text); }
+  .sw { display: inline-block; width: 22px; vertical-align: middle; margin-right: 6px; }
+  .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+  .checks li { display: flex; gap: 8px; align-items: flex-start; }
+  .checks li::before { flex: none; }
+  .checks li.ok::before { content: "✅"; }
+  .checks li.warn::before { content: "⚠️"; }
+  .checks li.bad::before { content: "⛔"; }
+  .check-card.ok { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); background: color-mix(in srgb, var(--ok) 7%, transparent); }
+  .check-card.warn { border-color: color-mix(in srgb, var(--warn) 60%, var(--line)); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+  .check-card.bad { border-color: color-mix(in srgb, var(--bad) 60%, var(--line)); background: color-mix(in srgb, var(--bad) 8%, transparent); }
   .badge { padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 12px; }
   .badge.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
   .badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
@@ -206,9 +221,20 @@
       <span id="info"></span>
       <span id="quality" class="badge" hidden></span>
     </div>
+    <div class="legend">
+      <span><i class="sw" style="border-top:2px dashed #888"></i><b>Sangrado:</b> la imagen debe llegar hasta aquí</span>
+      <span><i class="sw" style="border-top:2px solid #c2187a"></i><b>Corte:</b> orilla real del producto</span>
+      <span><i class="sw" style="border-top:2px dashed #7b2ff7"></i><b>Zona segura:</b> textos y caras aquí dentro</span>
+      <span><i class="sw" style="background:rgba(230,30,30,.45);height:10px;border-radius:2px"></i>Sin imagen</span>
+      <label class="check" style="margin:0 0 0 auto"><input type="checkbox" id="showGuides"> Mostrar guías</label>
+    </div>
   </section>
 
   <aside class="right">
+    <section class="card check-card" id="checkCard">
+      <h3 id="checkTitle">Revisión antes de imprimir</h3>
+      <ul id="checkList" class="checks"></ul>
+    </section>
     <section class="card">
       <button id="btnUpload" class="btn primary">📷 Subir / cambiar imagen</button>
       <div class="row r2">
@@ -449,6 +475,7 @@
       <input type="number" id="sheetGap" min="0" max="3" step="0.1">
       <label class="check"><input type="checkbox" id="sheetMarks"> Marcas de corte</label>
       <p id="sheetInfo" class="note" style="font-weight:600;color:var(--text)"></p>
+      <div class="card check-card" id="sheetCheckCard" style="margin-top:10px;padding:10px"><ul id="sheetChecks" class="checks"></ul></div>
       <div class="actions" style="flex-direction:column">
         <button class="btn primary" id="sheetPrint">🖨 Imprimir</button>
         <button class="btn" id="sheetDownload">⬇ Descargar hoja (PNG)</button>
@@ -516,7 +543,7 @@ const DPI = 300;
 const cm2px = cm => Math.round(cm / 2.54 * DPI);
 const px2cm = px => px / DPI * 2.54;
 const TAU = Math.PI * 2;
-const SAFE_CM = 0.3;
+const SAFE_CM = 0.5;
 const HANDLE_CM = 1.5;
 
 const CATS = ['Tazas y vasos', 'Termos y botellas', 'Ropa y textiles', 'Hogar y decoración', 'Accesorios y oficina'];
@@ -576,7 +603,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const settings = Object.assign(
-  { bleedMm: 2, guideOpacity: 50, paper: 'a4', orient: 'auto', gap: 0.2, marks: true },
+  { bleedMm: 2, guideOpacity: 50, guides: true, paper: 'a4', orient: 'auto', gap: 0.2, marks: true },
   store.get('sf_settings', {}));
 const saveSettings = () => store.set('sf_settings', settings);
 
@@ -610,6 +637,7 @@ let tpl = null, PW = 1, PH = 1, B = 0;
 let layers = [], sel = null, cells = [];
 let bgColor = '#ffffff', bgClear = false;
 let guide = null;
+let check = { warnings: [], overlay: null };
 let view = { k: 1, ox: 0, oy: 0, dpr: 1, w: 0, h: 0 };
 let drag = null, snap = { x: false, y: false };
 let undoStack = [], hIndex = -1;
@@ -962,12 +990,42 @@ function render() {
     ctx.fillText('+ Foto', r.x + r.w / 2, r.y + r.h / 2);
   });
   if (guide) { ctx.globalAlpha = settings.guideOpacity / 100; ctx.drawImage(guide, 0, 0, PW, PH); ctx.globalAlpha = 1; }
+  // Zonas que quedarían sin imagen, en rojo
+  if (settings.guides && check.overlay && !drag) ctx.drawImage(check.overlay, -B, -B, PW + 2 * B, PH + 2 * B);
   ctx.restore();
   ctx.restore();
 
   // Guías en píxeles de pantalla
   ctx.save();
   ctx.translate(ox, oy);
+  if (!settings.guides) {
+    ctx.beginPath(); ctx.save(); ctx.scale(k, k); trimShape(ctx); ctx.restore();
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(194,24,122,.5)'; ctx.stroke();
+  } else drawGuides(k);
+  if (drag && drag.mode === 'move') {
+    ctx.strokeStyle = '#00b3ff'; ctx.setLineDash([]);
+    ctx.beginPath();
+    if (snap.x) { ctx.moveTo(PW * k / 2, 0); ctx.lineTo(PW * k / 2, PH * k); }
+    if (snap.y) { ctx.moveTo(0, PH * k / 2); ctx.lineTo(PW * k, PH * k / 2); }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  if (sel) drawSelection(sel);
+  drawEraserCursor();
+  $('empty').hidden = layers.length > 0 || cells.length > 0;
+}
+
+// Línea de corte, sangrado, zona segura y zona del asa, con sus nombres
+function drawGuides(k) {
+  const label = (text, x, y, color, align = 'left') => {
+    ctx.save();
+    ctx.font = '700 10px Montserrat, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = align;
+    const w = ctx.measureText(text).width + 8, bx = align === 'left' ? x : align === 'right' ? x - w : x - w / 2;
+    ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.fillRect(bx, y - 8, w, 16);
+    ctx.fillStyle = color; ctx.fillText(text, align === 'left' ? x + 4 : align === 'right' ? x - 4 : x, y);
+    ctx.restore();
+  };
   if (tpl.mock === 'mug') {
     const hz = cm2px(HANDLE_CM) * k;
     if (hz > 12) {
@@ -987,23 +1045,18 @@ function render() {
   }
   trim(); ctx.setLineDash([]); ctx.lineWidth = 1.5; ctx.strokeStyle = '#c2187a'; ctx.stroke();
   const m = cm2px(SAFE_CM) * k;
-  ctx.setLineDash([5, 5]); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(123,47,247,.7)';
+  ctx.setLineDash([5, 5]); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(123,47,247,.85)';
   ctx.beginPath();
   if (tpl.shape === 'circle') ctx.ellipse(PW * k / 2, PH * k / 2, Math.max(1, PW * k / 2 - m), Math.max(1, PH * k / 2 - m), 0, 0, TAU);
   else ctx.rect(m, m, PW * k - 2 * m, PH * k - 2 * m);
   ctx.stroke();
-  if (drag && drag.mode === 'move') {
-    ctx.strokeStyle = '#00b3ff'; ctx.setLineDash([]);
-    ctx.beginPath();
-    if (snap.x) { ctx.moveTo(PW * k / 2, 0); ctx.lineTo(PW * k / 2, PH * k); }
-    if (snap.y) { ctx.moveTo(0, PH * k / 2); ctx.lineTo(PW * k, PH * k / 2); }
-    ctx.stroke();
+  ctx.setLineDash([]);
+  const b = B * k, round = tpl.shape === 'circle';
+  if (PW * k > 160) {
+    if (b > 0) label('SANGRADO', round ? PW * k / 2 : -b, -b - 10, '#555', round ? 'center' : 'left');
+    label('CORTE', round ? PW * k / 2 : PW * k, PH * k + b + 10, '#c2187a', round ? 'center' : 'right');
+    if (PH * k > 70) label('ZONA SEGURA', round ? PW * k / 2 : m + 2, m + 11, '#7b2ff7', round ? 'center' : 'left');
   }
-  ctx.restore();
-
-  if (sel) drawSelection(sel);
-  drawEraserCursor();
-  $('empty').hidden = layers.length > 0 || cells.length > 0;
 }
 
 function toScreen(l, lx, ly) {
@@ -1221,16 +1274,101 @@ function applySnap(s) {
   cells = s.cells.map(c => ({ ...c }));
   bgColor = s.bgColor; bgClear = s.bgClear; sel = layers[s.sel] || null;
   $('bgColor').value = bgColor; $('bgClear').checked = bgClear;
-  render(); syncPanel(); scheduleSave();
+  render(); syncPanel(); scheduleSave(); scheduleCheck();
 }
 function commit() {
   undoStack = undoStack.slice(0, hIndex + 1);
   undoStack.push(snapshot());
   if (undoStack.length > 60) undoStack.shift();
   hIndex = undoStack.length - 1;
-  updateUndo(); scheduleSave();
+  updateUndo(); scheduleSave(); scheduleCheck();
 }
-function resetHistory() { undoStack = [snapshot()]; hIndex = 0; updateUndo(); }
+function resetHistory() { undoStack = [snapshot()]; hIndex = 0; updateUndo(); scheduleCheck(); }
+
+/* ---------- Revisión antes de imprimir ---------- */
+let checkT;
+function scheduleCheck() { clearTimeout(checkT); checkT = setTimeout(runCheck, 250); }
+// Esquinas de una capa en coordenadas de la plantilla
+function layerCorners(l) {
+  const { w, h } = layerSize(l), a = l.rot * Math.PI / 180;
+  return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([lx, ly]) => {
+    const x = lx * kx(l), y = ly * ky(l);
+    return { x: l.x + x * Math.cos(a) - y * Math.sin(a), y: l.y + x * Math.sin(a) + y * Math.cos(a) };
+  });
+}
+function runCheck() {
+  if (!tpl) return;
+  const ws = [];
+  let overlay = null;
+  const images = layers.filter(l => l.type === 'image');
+
+  // 1. ¿La imagen cubre todo hasta el sangrado?
+  if (images.length) {
+    const sc = Math.min(1, 300 / Math.max(PW + 2 * B, PH + 2 * B));
+    const c = exportCanvas({ scale: sc, noBg: true });
+    const W = c.width, H = c.height, d = c.getContext('2d').getImageData(0, 0, W, H).data;
+    const o = document.createElement('canvas'); o.width = W; o.height = H;
+    const ox = o.getContext('2d'), od = ox.createImageData(W, H);
+    let inside = 0, empty = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (tpl.shape === 'circle' && ((x + .5) / W * 2 - 1) ** 2 + ((y + .5) / H * 2 - 1) ** 2 > 1) continue;
+      inside++;
+      const i = (y * W + x) * 4;
+      if (d[i + 3] < 128) { empty++; od.data[i] = 230; od.data[i + 1] = 30; od.data[i + 2] = 30; od.data[i + 3] = 115; }
+    }
+    if (empty / inside > 0.003) {
+      ox.putImageData(od, 0, 0); overlay = o;
+      ws.push(['warn', bgClear
+        ? 'Hay partes sin imagen (en rojo): saldrán sin color. Usa “Rellenar” o “Estirar”.'
+        : 'Hay partes sin imagen (en rojo): saldrán del color de fondo. Usa “Rellenar” o “Estirar”, o ignóralo si es a propósito.']);
+    }
+  }
+
+  // 2. Textos, figuras y fotos recortadas dentro de la zona segura (y fuera del asa)
+  const m = cm2px(SAFE_CM), hz = tpl.mock === 'mug' ? cm2px(HANDLE_CM) : 0;
+  const inSafe = p => tpl.shape === 'circle'
+    ? ((p.x - PW / 2) / (PW / 2 - m)) ** 2 + ((p.y - PH / 2) / (PH / 2 - m)) ** 2 <= 1.02
+    : p.x >= m - 1 && p.y >= m - 1 && p.x <= PW - m + 1 && p.y <= PH - m + 1;
+  let outText = 0, inHandle = 0;
+  for (const l of layers) {
+    const important = l.type === 'text' || (l.type === 'shape' && !l.frame) || (l.type === 'image' && l.mask && l.mask !== 'none');
+    if (!important) continue;
+    let pts = layerCorners(l);
+    // En redondos el contorno de un texto no llega a las esquinas de su caja
+    if (tpl.shape === 'circle') pts = pts.map(p => ({ x: l.x + (p.x - l.x) * 0.8, y: l.y + (p.y - l.y) * 0.8 }));
+    if (!pts.every(inSafe)) outText++;
+    else if (hz && pts.some(p => p.x < hz || p.x > PW - hz)) inHandle++;
+  }
+  if (outText) ws.push(['bad', `${outText === 1 ? 'Un texto o elemento está' : `${outText} textos o elementos están`} fuera de la zona segura (línea morada): se puede cortar.`]);
+  if (inHandle) ws.push(['warn', 'Hay texto o figuras en la zona del asa: quedarán tapados por el asa.']);
+
+  // 3. Resolución de las fotos
+  const worst = Math.min(...images.map(l => DPI / Math.max(kx(l), ky(l))));
+  if (images.length && worst < 100) ws.push(['bad', `Una foto tiene muy baja resolución (${Math.round(worst)} DPI): saldrá pixelada.`]);
+  else if (images.length && worst < 150) ws.push(['warn', `Una foto tiene resolución regular (${Math.round(worst)} DPI): puede verse un poco borrosa.`]);
+
+  // 4. Collage incompleto y diseño vacío
+  if (cells.length && emptyCell() >= 0) ws.push(['warn', 'Faltan fotos en el collage.']);
+  if (!layers.length) ws.push(['warn', 'Todavía no hay nada en el diseño.']);
+
+  check = { warnings: ws, overlay };
+  renderChecks($('checkList'), $('checkCard'));
+  render();
+}
+function renderChecks(list, card) {
+  const ws = check.warnings, mirror = $('mirror').checked;
+  list.innerHTML = '';
+  const add = (lvl, txt) => { const li = document.createElement('li'); li.className = lvl; li.textContent = txt; list.appendChild(li); };
+  if (!ws.length) {
+    add('ok', 'La imagen cubre todo el producto.');
+    add('ok', 'Los textos están dentro de la zona segura.');
+    add('ok', 'Buena resolución.');
+  } else ws.forEach(([lvl, txt]) => add(lvl, txt));
+  add(mirror ? 'ok' : 'warn', mirror ? 'Espejo activado.' : 'Espejo apagado: los textos saldrán al revés en el producto.');
+  const level = ws.some(w => w[0] === 'bad') ? 'bad' : (ws.length || !mirror) ? 'warn' : 'ok';
+  card.className = 'card check-card ' + level;
+  if (card.id === 'checkCard') $('checkTitle').textContent = level === 'ok' ? '✔ Listo para imprimir' : 'Revisión antes de imprimir';
+}
 function undo() { if (hIndex > 0) { applySnap(undoStack[--hIndex]); updateUndo(); } }
 function redo() { if (hIndex < undoStack.length - 1) { applySnap(undoStack[++hIndex]); updateUndo(); } }
 function updateUndo() { $('btnUndo').disabled = hIndex <= 0; $('btnRedo').disabled = hIndex >= undoStack.length - 1; }
@@ -1628,6 +1766,9 @@ $('bgColor').onchange = commit;
 $('bgClear').onchange = e => { bgClear = e.target.checked; render(); commit(); };
 
 /* ---------- Plantilla: sangrado e imagen guía ---------- */
+$('showGuides').checked = settings.guides;
+$('showGuides').onchange = e => { settings.guides = e.target.checked; saveSettings(); render(); };
+$('mirror').addEventListener('change', () => renderChecks($('checkList'), $('checkCard')));
 $('bleed').value = settings.bleedMm;
 $('bleed').onchange = e => {
   settings.bleedMm = +e.target.value; saveSettings();
@@ -1672,7 +1813,7 @@ $('tplForm').addEventListener('submit', () => {
 });
 
 /* ---------- Exportar ---------- */
-function exportCanvas({ mirror = false, bleed = true, scale = 1 } = {}) {
+function exportCanvas({ mirror = false, bleed = true, scale = 1, noBg = false } = {}) {
   const b = bleed ? B : 0;
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round((PW + 2 * b) * scale));
@@ -1683,7 +1824,7 @@ function exportCanvas({ mirror = false, bleed = true, scale = 1 } = {}) {
   if (mirror) { x.translate(PW + 2 * b, 0); x.scale(-1, 1); }
   x.translate(b, b);
   x.beginPath(); bleed ? fullShape(x) : trimShape(x); x.clip();
-  if (!bgClear) { x.fillStyle = bgColor; x.fillRect(-b, -b, PW + 2 * b, PH + 2 * b); }
+  if (!bgClear && !noBg) { x.fillStyle = bgColor; x.fillRect(-b, -b, PW + 2 * b, PH + 2 * b); }
   drawLayers(x);
   return c;
 }
@@ -1805,6 +1946,8 @@ function updateSheet() {
   if (want > sheetL.n && sheetL.n) $('sheetInfo').textContent += ` Solo caben ${sheetL.n}; usa otra hoja para el resto.`;
   if (sheetL.tight && sheetL.n) $('sheetInfo').textContent += ' Va casi a la orilla: activa "impresión sin bordes" en tu impresora o usa una hoja más grande.';
   $('sheetPrint').disabled = $('sheetDownload').disabled = !sheetQty;
+  renderChecks($('sheetChecks'), $('sheetCheckCard'));
+  renderChecks($('checkList'), $('checkCard'));
   const hasText = layers.some(l => l.type === 'text');
   $('mirrorWarn').hidden = $('sheetMirror').checked || !hasText;
   $('mirrorWarn').textContent = '⚠ Sin espejo, los textos saldrán al revés en el producto.';
