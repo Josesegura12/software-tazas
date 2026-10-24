@@ -102,6 +102,19 @@
     display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
     padding: 8px 14px; background: var(--panel); border-top: 1px solid var(--line); font-size: 13px; color: var(--muted);
   }
+  #toasts {
+    position: fixed; inset: auto 16px 16px auto; margin: 0; padding: 0; border: 0; background: transparent;
+    display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px)); overflow: visible;
+  }
+  #toasts:not(:popover-open) { display: none; }
+  .toast {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line); border-left: 4px solid var(--ok);
+    border-radius: 10px; padding: 10px 14px; font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / .2);
+    animation: tin .2s ease-out;
+  }
+  .toast.warn { border-left-color: var(--warn); }
+  .toast.bad { border-left-color: var(--bad); }
+  @keyframes tin { from { opacity: 0; transform: translateY(8px); } }
   .legend {
     display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 6px 14px 8px;
     background: var(--panel); font-size: 12px; color: var(--muted);
@@ -638,6 +651,8 @@
   <div id="designGrid" class="designs"></div>
 </dialog>
 
+<div id="toasts" popover="manual" aria-live="polite"></div>
+
 <input type="file" id="file" accept="image/*" multiple hidden>
 <input type="file" id="guideFile" accept="image/*" hidden>
 
@@ -748,6 +763,24 @@ let pickMode = {};
 let loading = false;
 
 const $ = id => document.getElementById(id);
+
+// Avisos que no bloquean la página; van en la capa superior para verse también sobre las ventanas
+function toast(msg, kind = 'ok', ms = kind === 'bad' ? 7000 : 4000) {
+  const box = $('toasts'), el = document.createElement('div');
+  el.className = 'toast ' + kind; el.textContent = msg;
+  box.appendChild(el);
+  try { if (box.matches(':popover-open')) box.hidePopover(); box.showPopover(); } catch {}
+  setTimeout(() => { el.remove(); if (!box.children.length) try { box.hidePopover(); } catch {} }, ms);
+}
+let lastErrorToast = 0;
+function reportError(err) {
+  console.error(err);
+  if (Date.now() - lastErrorToast < 3000) return;
+  lastErrorToast = Date.now();
+  toast('Algo falló: ' + ((err && err.message) || err) + '. Si se repite, recarga la página (tu diseño se guarda solo).', 'bad');
+}
+window.addEventListener('error', e => reportError(e.error || e.message));
+window.addEventListener('unhandledrejection', e => reportError(e.reason));
 const cv = $('cv'), ctx = cv.getContext('2d');
 const stage = $('stage');
 const measureCtx = document.createElement('canvas').getContext('2d');
@@ -875,12 +908,35 @@ function blobToImage(blob) {
 }
 const emptyCell = () => cells.findIndex((c, i) => !layers.some(l => l.type === 'image' && l.cell === i));
 
+// Lado máximo que se guarda: alcanza para 300 DPI en una pieza de ~59 cm y evita que el navegador se quede sin memoria
+const MAX_SIDE = 7000;
+async function prepareImage(file) {
+  if (/\.(heic|heif)$/i.test(file.name || '') || /hei[cf]/i.test(file.type)) {
+    throw new Error(`“${file.name}” es una foto HEIC de iPhone y el navegador no la puede abrir. Mándala como JPG (en el iPhone: Ajustes → Cámara → Formatos → Más compatible).`);
+  }
+  let img;
+  try { img = await blobToImage(file); }
+  catch { throw new Error(`No se pudo abrir “${file.name || 'la imagen'}”. Puede estar dañada o en un formato que el navegador no lee.`); }
+  const w = img.naturalWidth, h = img.naturalHeight;
+  if (!w || !h) throw new Error(`“${file.name}” no tiene tamaño (puede ser un SVG sin medidas).`);
+  if (Math.max(w, h) <= MAX_SIDE) return { blob: file, img };
+  const f = MAX_SIDE / Math.max(w, h), c = document.createElement('canvas');
+  c.width = Math.round(w * f); c.height = Math.round(h * f);
+  const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(img, 0, 0, c.width, c.height);
+  const type = /jpe?g/i.test(file.type) ? 'image/jpeg' : 'image/png';
+  const blob = await new Promise(r => c.toBlob(r, type, 0.95));
+  toast(`“${file.name}” era muy grande (${w}×${h}); se redujo a ${c.width}×${c.height}, suficiente para imprimir.`);
+  return { blob, img: await blobToImage(blob) };
+}
+
 async function addFiles(files, { replace = false, cell = null } = {}) {
-  files = [...files].filter(f => f.type.startsWith('image/'));
+  const all = [...files];
+  files = all.filter(f => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name || ''));
+  if (all.length > files.length) toast('Algunos archivos no son imágenes y se ignoraron.', 'warn');
   if (!files.length) return;
   for (let i = 0; i < files.length; i++) {
-    let img;
-    try { img = await blobToImage(files[i]); } catch { alert('No se pudo abrir la imagen: ' + files[i].name); continue; }
+    let img, blob;
+    try { ({ img, blob } = await prepareImage(files[i])); } catch (err) { toast(err.message, 'bad'); continue; }
     let target = null, targetCell = null;
     if (i === 0 && cell != null) targetCell = cell;
     else if (cells.length && emptyCell() >= 0) targetCell = emptyCell();
@@ -893,7 +949,7 @@ async function addFiles(files, { replace = false, cell = null } = {}) {
       const top = layers.findIndex(l => l.type !== 'image');
       if (top < 0) layers.push(target); else layers.splice(top, 0, target);
     }
-    Object.assign(target, { blob: files[i], orig: img, cut: null, cutTol: 0, rot: 0, flip: false, fit: settings.fitMode });
+    Object.assign(target, { blob, orig: img, cut: null, cutTol: 0, rot: 0, flip: false, fit: settings.fitMode });
     refit(target);
     sel = target;
   }
@@ -1515,11 +1571,14 @@ function docData() {
   return { tplId: tpl.id, tpl: { ...tpl }, bgColor, bgClear, cells: cells.map(c => ({ ...c })),
            layers: layers.map(l => { const o = { ...l }; delete o.orig; delete o.cut; delete o._blur; return o; }) };
 }
-let saveT;
+let saveT, saveFailed = false;
 function scheduleSave() {
   if (loading) return;
   clearTimeout(saveT);
-  saveT = setTimeout(() => idb.put('kv', docData(), 'current').catch(() => {}), 700);
+  saveT = setTimeout(() => idb.put('kv', docData(), 'current').then(() => { saveFailed = false; }).catch(() => {
+    if (!saveFailed) toast('No se pudo guardar automáticamente (el navegador no lo permite o no tiene espacio). Descarga tu diseño para no perderlo.', 'warn', 8000);
+    saveFailed = true;
+  }), 700);
 }
 async function loadDoc(d) {
   loading = true;
@@ -1578,13 +1637,14 @@ async function renderDesigns() {
 $('btnDesigns').onclick = () => { $('designName').value = ''; renderDesigns(); $('designsDlg').showModal(); };
 $('designsClose').onclick = () => $('designsDlg').close();
 $('designSave').onclick = async () => {
-  if (!layers.length) { alert('El diseño está vacío.'); return; }
+  if (!layers.length) { toast('El diseño está vacío.', 'warn'); return; }
   const name = $('designName').value.trim() || `${tpl.name} ${new Date().toLocaleDateString()}`;
   const thumb = exportCanvas({ bleed: false, scale: Math.min(1, 240 / Math.max(PW, PH)) }).toDataURL('image/png');
   try { await idb.put('designs', { id: 'd' + Date.now(), name, date: Date.now(), product: tpl.name, thumb, doc: docData() }); }
-  catch { alert('No se pudo guardar el diseño en este navegador.'); return; }
+  catch { toast('No se pudo guardar el diseño: el navegador no tiene espacio o no lo permite.', 'bad'); return; }
   $('designName').value = '';
   renderDesigns();
+  toast(`Diseño guardado: ${name}`);
 };
 
 /* ---------- Subir imagen ---------- */
@@ -1717,7 +1777,7 @@ const busy = async (fn, msg) => {
   if (note) note.textContent = msg;
   await new Promise(r => setTimeout(r, 30));
   try { await fn(); }
-  catch (err) { alert(err.message || 'Algo salió mal.'); }
+  catch (err) { toast(err.message || 'Algo salió mal.', 'bad'); }
   finally { document.body.style.cursor = ''; if (note) note.textContent = prev; }
 };
 
@@ -1825,7 +1885,7 @@ $('btnCrop').onclick = openCrop;
 $('cropClose').onclick = $('cropCancel').onclick = () => $('cropDlg').close();
 $('cropApply').onclick = () => busy(async () => {
   const r = crop.r, l = sel;
-  if (r.w < 4 || r.h < 4) { alert('Marca un área más grande.'); return; }
+  if (r.w < 4 || r.h < 4) { toast('Marca un área más grande.', 'warn'); return; }
   const c = document.createElement('canvas');
   c.width = Math.round(r.w); c.height = Math.round(r.h);
   c.getContext('2d').drawImage(crop.src, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
@@ -1939,7 +1999,7 @@ $('guideLoad').onclick = () => $('guideFile').click();
 $('guideFile').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (!f) return;
-  try { guide = await blobToImage(f); } catch { alert('No se pudo abrir la imagen guía.'); return; }
+  try { guide = await blobToImage(f); } catch { toast('No se pudo abrir la imagen guía.', 'bad'); return; }
   idb.put('kv', f, 'guide:' + tpl.id).catch(() => {});
   updateGuideUI(); render();
 };
@@ -1992,9 +2052,10 @@ function toPng(canvas) {
 function download(blob, name) {
   const a = document.createElement('a');
   a.download = name; a.href = URL.createObjectURL(blob); a.click();
+  toast(`Descargado: ${name}`);
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
-const needDesign = () => { if (layers.length) return true; alert('Primero sube una imagen.'); return false; };
+const needDesign = () => { if (layers.length) return true; toast('Primero sube una imagen.', 'warn'); return false; };
 
 $('btnDownload').onclick = async () => {
   if (!needDesign()) return;
@@ -2120,7 +2181,7 @@ $('sheetQty').oninput = updateSheet;
 const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 $('sheetPrint').onclick = async () => {
   const w = window.open('', '_blank');
-  if (!w) { alert('Permite las ventanas emergentes para imprimir.'); return; }
+  if (!w) { toast('El navegador bloqueó la ventana de impresión: permite las ventanas emergentes para esta página.', 'bad'); return; }
   w.document.write('<p style="font:16px sans-serif;padding:20px">Preparando impresión…</p>');
   const url = URL.createObjectURL(await toPng(sheetCanvas));
   const { W, H } = sheetL;
