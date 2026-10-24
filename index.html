@@ -579,7 +579,36 @@
         <button class="btn primary" id="sheetPrint">🖨 Imprimir</button>
         <button class="btn" id="sheetDownload">⬇ Descargar hoja (PNG)</button>
       </div>
+      <button class="btn" id="btnComb" title="Mezcla este diseño con otros guardados en la misma hoja">🧩 Hoja combinada (varios diseños)</button>
       <p class="note">En la ventana de impresión elige <b>Escala: 100% / Tamaño real</b> y el mismo tamaño de hoja.</p>
+    </div>
+  </div>
+</dialog>
+
+<!-- Hoja combinada -->
+<dialog id="combDlg" class="wide">
+  <div class="dlg-head">
+    <div><h3>Hoja combinada</h3><span class="note">Junta varios diseños distintos (de cualquier producto) para aprovechar el papel.</span></div>
+    <button class="x" id="combClose" title="Cerrar">✕</button>
+  </div>
+  <div class="split">
+    <div>
+      <div class="pv-wrap"><canvas id="combPv"></canvas></div>
+      <div class="inline" id="combNav" style="justify-content:center;margin-top:8px" hidden>
+        <button class="btn" id="combPrev" style="width:auto;margin:0">◀</button>
+        <b id="combPageInfo"></b>
+        <button class="btn" id="combNext" style="width:auto;margin:0">▶</button>
+      </div>
+    </div>
+    <div>
+      <div id="combList"></div>
+      <select id="combAdd" style="margin-top:6px"></select>
+      <p id="combInfo" class="note" style="font-weight:600;color:var(--text)"></p>
+      <p class="note">Usa la hoja, la orientación, el espejo y las marcas de corte del editor de impresión.</p>
+      <div class="actions" style="flex-direction:column">
+        <button class="btn primary" id="combPrint">🖨 Imprimir</button>
+        <button class="btn" id="combDownload">⬇ Descargar (PNG)</button>
+      </div>
     </div>
   </div>
 </dialog>
@@ -2671,6 +2700,201 @@ $('sheetPrint').onclick = async () => {
 $('sheetDownload').onclick = () => busy(async () => {
   const m = $('sheetMirror').checked, pngs = await allSheetPngs(), base = `${fileName()}_hoja-${sheetL.paper.name}${m ? '_espejo' : ''}`;
   if (pngs.length === 1) { download(pngs[0], `${base}_${sheetQty}pzs.png`); return; }
+  const files = await Promise.all(pngs.map(async (b, i) => ({ name: `${base}_${i + 1}-de-${pngs.length}.png`, data: new Uint8Array(await b.arrayBuffer()) })));
+  download(makeZip(files), `${base}_${pngs.length}-hojas.zip`);
+});
+
+/* ---------- Hoja combinada: varios diseños distintos en la misma hoja ---------- */
+// Abre la ventana de impresión con varias hojas (cada PNG es una hoja de W × H cm)
+function printPngs(pngs, W, H, title) {
+  const w = window.open('', '_blank');
+  if (!w) { toast('El navegador bloqueó la ventana de impresión: permite las ventanas emergentes para esta página.', 'bad'); return; }
+  const urls = pngs.map(b => URL.createObjectURL(b));
+  // margin:0 evita que el navegador imprima título, fecha y ruta del archivo
+  w.document.write(`<!doctype html><html><head><title>${esc(title)}</title>
+    <style>@page{size:${W}cm ${H}cm;margin:0}html,body{margin:0;padding:0}
+    img{display:block;width:${W}cm;height:${(H - 0.02).toFixed(2)}cm;break-after:page}img:last-of-type{break-after:auto}</style></head>
+    <body>${urls.map(u => `<img src="${u}">`).join('')}
+    <script>var n=0,imgs=document.images;for(var i=0;i<imgs.length;i++)imgs[i].onload=function(){if(++n===imgs.length)setTimeout(function(){print()},300)};<\/script></body></html>`);
+  w.document.close();
+}
+
+const comb = { items: [], pages: [], page: 0, W: 0, H: 0 };
+// Pieza lista para imprimir de un diseño guardado: se cambia el editor a ese diseño un instante
+// (sin esperas a la mitad, para que nada más vea el cambio) y se regresa todo como estaba.
+async function pieceFromDoc(doc, mirror) {
+  const t = allTemplates().find(x => x.id === doc.tplId) || doc.tpl;
+  const ls = [];
+  for (const o of doc.layers || []) {
+    const l = { ...o };
+    if (l.type === 'image') {
+      try { l.orig = await blobToImage(l.blob); } catch { continue; }
+      l.cut = l.cutTol > 0 ? removeBg(l.orig, l.cutTol) : null;
+    }
+    ls.push(l);
+  }
+  const saved = { tpl, PW, PH, layers, cells, bgColor, bgColor2, bgClear, sel };
+  try {
+    tpl = t; PW = cm2px(t.w); PH = cm2px(t.h);
+    layers = ls; cells = doc.cells || [];
+    bgColor = doc.bgColor || '#ffffff'; bgColor2 = doc.bgColor2 || null; bgClear = !!doc.bgClear;
+    layers.forEach(l => l.fit && refit(l));
+    return printCanvas({ mirror });
+  } finally {
+    ({ tpl, PW, PH, layers, cells, bgColor, bgColor2, bgClear, sel } = saved);
+  }
+}
+
+// Acomodo que llena los huecos: cada pieza (de la más grande a la más chica) va al espacio libre
+// donde mejor quepa, girada o no; el espacio que sobra se parte en dos rectángulos libres.
+function packPieces(pieces, W, H, m, gap) {
+  const UW = W - 2 * m + gap, UH = H - 2 * m + gap;
+  const list = pieces.map(p => ({ ...p })).sort((a, b) => Math.max(b.wcm, b.hcm) * Math.min(b.wcm, b.hcm) - Math.max(a.wcm, a.hcm) * Math.min(a.wcm, a.hcm));
+  const pages = [];
+  for (const p of list) {
+    let best = null;
+    const tryPage = (pg, pi) => pg.free.forEach((fr, fi) => {
+      for (const rot of [false, true]) {
+        const w = (rot ? p.hcm : p.wcm) + gap, h = (rot ? p.wcm : p.hcm) + gap;
+        if (w > fr.w + 1e-6 || h > fr.h + 1e-6) continue;
+        const score = Math.min(fr.w - w, fr.h - h);
+        if (!best || pi < best.pi || (pi === best.pi && score < best.score)) best = { pi, fi, rot, w, h, score };
+      }
+    });
+    pages.forEach(tryPage);
+    if (!best) {
+      const pg = { free: [{ x: 0, y: 0, w: UW, h: UH }], placed: [] };
+      pages.push(pg); tryPage(pg, pages.length - 1);
+      if (!best) return null;   // no cabe ni en una hoja vacía
+    }
+    const pg = pages[best.pi], fr = pg.free.splice(best.fi, 1)[0];
+    pg.placed.push({ ...p, x: m + fr.x, y: m + fr.y, w: best.w - gap, h: best.h - gap, rot: best.rot });
+    const restW = fr.w - best.w, restH = fr.h - best.h;
+    const parts = restW < restH
+      ? [{ x: fr.x + best.w, y: fr.y, w: restW, h: best.h }, { x: fr.x, y: fr.y + best.h, w: fr.w, h: restH }]
+      : [{ x: fr.x + best.w, y: fr.y, w: restW, h: fr.h }, { x: fr.x, y: fr.y + best.h, w: best.w, h: restH }];
+    pg.free.push(...parts.filter(r => r.w > 0.5 && r.h > 0.5));
+  }
+  return pages.map(pg => pg.placed);
+}
+
+function drawCombPage(placed) {
+  const toPx = v => v / 2.54 * DPI;
+  const c = document.createElement('canvas');
+  c.width = cm2px(comb.W); c.height = cm2px(comb.H);
+  const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+  for (const p of placed) {
+    x.save();
+    if (p.rot) { x.translate(toPx(p.x) + p.canvas.height, toPx(p.y)); x.rotate(Math.PI / 2); } else x.translate(toPx(p.x), toPx(p.y));
+    x.drawImage(p.canvas, 0, 0);
+    x.restore();
+    if (settings.marks) {
+      // Esquinas de corte en la línea de corte de cada pieza (quedan en el espacio entre piezas)
+      const b = p.bleedCm, L = 0.25;
+      const x0 = p.x + b, y0 = p.y + b, x1 = p.x + p.w - b, y1 = p.y + p.h - b;
+      x.strokeStyle = '#555'; x.lineWidth = 2; x.beginPath();
+      for (const [cx, cy, dx, dy] of [[x0, y0, -1, -1], [x1, y0, 1, -1], [x0, y1, -1, 1], [x1, y1, 1, 1]]) {
+        x.moveTo(toPx(cx + dx * (b + 0.05)), toPx(cy)); x.lineTo(toPx(cx + dx * (b + 0.05 + L)), toPx(cy));
+        x.moveTo(toPx(cx), toPx(cy + dy * (b + 0.05))); x.lineTo(toPx(cx), toPx(cy + dy * (b + 0.05 + L)));
+      }
+      x.stroke();
+    }
+  }
+  return c;
+}
+
+async function updateComb() {
+  const mirror = $('sheetMirror').checked, paper = PAPERS[settings.paper];
+  const gap = Math.max(+settings.gap || 0, settings.marks ? 0.7 : 0.2);
+  const pieces = [];
+  for (const it of comb.items) {
+    if (!it.canvas || it.mirror !== mirror || it.boost !== settings.printBoost) {
+      it.canvas = it.doc ? await pieceFromDoc(it.doc, mirror) : printCanvas({ mirror });
+      it.mirror = mirror; it.boost = settings.printBoost;
+      it.wcm = px2cm(it.canvas.width); it.hcm = px2cm(it.canvas.height);
+    }
+    for (let q = 0; q < it.qty; q++) pieces.push({ canvas: it.canvas, wcm: it.wcm, hcm: it.hcm, bleedCm: it.bleedCm });
+  }
+  // Se prueba la hoja vertical y horizontal y se queda la que use menos hojas
+  let best = null;
+  for (const o of settings.orient === 'auto' ? ['v', 'h'] : [settings.orient]) {
+    const W = o === 'v' ? paper.w : paper.h, H = o === 'v' ? paper.h : paper.w;
+    const pages = packPieces(pieces, W, H, 0.5, gap);
+    if (pages && (!best || pages.length < best.pages.length)) best = { pages, W, H, o };
+  }
+  comb.pages = best ? best.pages : [];
+  if (best) { comb.W = best.W; comb.H = best.H; }
+  comb.page = Math.min(comb.page, Math.max(0, comb.pages.length - 1));
+  renderCombList();
+  const pv = $('combPv'), info = $('combInfo');
+  if (!best) {
+    info.textContent = 'Alguna pieza no cabe en esta hoja. Elige una hoja más grande.';
+    pv.width = 1; pv.height = 1; $('combPrint').disabled = $('combDownload').disabled = true; return;
+  }
+  const page = drawCombPage(comb.pages[comb.page]);
+  pv.width = 620; pv.height = Math.round(620 * page.height / page.width);
+  pv.getContext('2d').drawImage(page, 0, 0, pv.width, pv.height);
+  info.textContent = `${pieces.length} piezas en ${comb.pages.length} hoja${comb.pages.length > 1 ? 's' : ''} ${paper.name} ${best.o === 'v' ? 'vertical' : 'horizontal'}.`;
+  $('combNav').hidden = comb.pages.length < 2;
+  $('combPageInfo').textContent = `Hoja ${comb.page + 1} de ${comb.pages.length}`;
+  $('combPrint').disabled = $('combDownload').disabled = !pieces.length;
+}
+
+function renderCombList() {
+  const list = $('combList');
+  list.innerHTML = '';
+  comb.items.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'inline'; row.style.cssText = 'gap:8px;margin-bottom:6px';
+    row.innerHTML = `<span style="flex:1;font-size:13px"><b></b><br><span class="note"></span></span>
+      <input type="number" min="0" max="200" style="width:64px" title="Cantidad">
+      <button class="x" title="Quitar">✕</button>`;
+    row.querySelector('b').textContent = it.name;
+    row.querySelector('.note').textContent = it.wcm ? `${it.wcm.toFixed(1)} × ${it.hcm.toFixed(1)} cm` : '';
+    const qty = row.querySelector('input'); qty.value = it.qty;
+    qty.onchange = () => { it.qty = Math.max(0, Math.round(+qty.value || 0)); updateComb(); };
+    row.querySelector('button').onclick = () => { comb.items.splice(i, 1); updateComb(); };
+    list.appendChild(row);
+  });
+}
+
+async function openComb() {
+  if (!needDesign()) return;
+  comb.items = [{ name: `Diseño actual (${tpl.name})`, qty: 1, bleedCm: px2cm(B) }];
+  comb.page = 0;
+  const sel_ = $('combAdd');
+  sel_.innerHTML = '<option value="">+ Agregar un diseño guardado…</option>';
+  try {
+    const list = (await idb.all('designs')).sort((a, b) => b.date - a.date);
+    comb.saved = list;
+    list.forEach((d, i) => { const o = document.createElement('option'); o.value = i; o.textContent = `${d.name} · ${d.product}`; sel_.appendChild(o); });
+    if (!list.length) sel_.innerHTML = '<option value="">(Guarda diseños en "Mis diseños" para combinarlos)</option>';
+  } catch { sel_.innerHTML = '<option value="">(Este navegador no permite diseños guardados)</option>'; }
+  $('sheetDlg').close();
+  $('combDlg').showModal();
+  busy(updateComb);
+}
+$('combAdd').onchange = e => {
+  const d = comb.saved && comb.saved[+e.target.value];
+  e.target.value = '';
+  if (!d) return;
+  comb.items.push({ name: d.name, doc: d.doc, qty: 1, bleedCm: px2cm(B) });
+  busy(updateComb);
+};
+$('btnComb').onclick = openComb;
+$('combClose').onclick = () => $('combDlg').close();
+$('combPrev').onclick = () => { if (comb.page > 0) { comb.page--; updateComb(); } };
+$('combNext').onclick = () => { if (comb.page < comb.pages.length - 1) { comb.page++; updateComb(); } };
+async function combPngs() {
+  const out = [];
+  for (const placed of comb.pages) out.push(await toPng(drawCombPage(placed)));
+  return out;
+}
+$('combPrint').onclick = () => busy(async () => printPngs(await combPngs(), comb.W, comb.H, 'Hoja combinada'));
+$('combDownload').onclick = () => busy(async () => {
+  const pngs = await combPngs(), base = `hoja-combinada_${PAPERS[settings.paper].name}`;
+  if (pngs.length === 1) { download(pngs[0], `${base}.png`); return; }
   const files = await Promise.all(pngs.map(async (b, i) => ({ name: `${base}_${i + 1}-de-${pngs.length}.png`, data: new Uint8Array(await b.arrayBuffer()) })));
   download(makeZip(files), `${base}_${pngs.length}-hojas.zip`);
 });
