@@ -488,6 +488,13 @@
     <section class="card">
       <h3>Guardar</h3>
       <label class="check"><input type="checkbox" id="mirror" checked> Espejo (para sublimar)</label>
+      <label class="f">Ajuste de color al imprimir</label>
+      <select id="printBoost" title="Al sublimar los colores suelen salir más apagados: esto los aviva solo en la impresión">
+        <option value="0">Sin ajuste (tal cual)</option>
+        <option value="8">Suave (+8 %)</option>
+        <option value="15">Medio (+15 %)</option>
+        <option value="25">Fuerte (+25 %)</option>
+      </select>
       <button id="btnPrint" class="btn primary">🖨 Editor de impresión</button>
       <button id="btnMock" class="btn">👁 Ver en el producto</button>
       <button id="btnDownload" class="btn">⬇ Descargar PNG (1 pieza)</button>
@@ -857,7 +864,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const settings = Object.assign(
-  { bleedMm: 2, guideOpacity: 50, guides: true, fitMode: 'auto', paper: 'a4', orient: 'auto', gap: 0.2, marks: true },
+  { bleedMm: 2, guideOpacity: 50, guides: true, fitMode: 'auto', printBoost: 0, paper: 'a4', orient: 'auto', gap: 0.2, marks: true },
   store.get('sf_settings', {}));
 const saveSettings = () => store.set('sf_settings', settings);
 
@@ -2466,7 +2473,7 @@ const needDesign = () => { if (layers.length) return true; toast('Primero sube u
 $('btnDownload').onclick = async () => {
   if (!needDesign()) return;
   const m = $('mirror').checked;
-  download(await toPng(exportCanvas({ mirror: m })), `${fileName()}_${fmt(tpl.w)}x${fmt(tpl.h)}cm${m ? '_espejo' : ''}.png`);
+  download(await toPng(printCanvas({ mirror: m })), `${fileName()}_${fmt(tpl.w)}x${fmt(tpl.h)}cm${m ? '_espejo' : ''}.png`);
 };
 
 /* ---------- Editor de impresión (hoja con varias piezas) ---------- */
@@ -2552,7 +2559,7 @@ function pieceWithText(l, text, mirror) {
   l.text = text;
   const w1 = layerSize(l).w;
   if (w1 > w0) l.size = old.size * w0 / w1;
-  const c = exportCanvas({ mirror });
+  const c = printCanvas({ mirror });
   Object.assign(l, old);
   return c;
 }
@@ -2597,7 +2604,19 @@ function updateSheet() {
   $('mirrorWarn').hidden = $('sheetMirror').checked || !hasText;
   $('mirrorWarn').textContent = '⚠ Sin espejo, los textos saldrán al revés en el producto.';
 }
-function rebuildPiece() { sheetPiece = exportCanvas({ mirror: $('sheetMirror').checked }); }
+function rebuildPiece() { sheetPiece = printCanvas({ mirror: $('sheetMirror').checked }); }
+// La pieza que va a la impresora: igual que el diseño, con el ajuste de color para sublimar si se eligió
+function printCanvas(opts) {
+  const c = exportCanvas(opts), k = settings.printBoost;
+  if (!k) return c;
+  const out = document.createElement('canvas'); out.width = c.width; out.height = c.height;
+  const x = out.getContext('2d');
+  x.filter = `saturate(${100 + k * 1.6}%) contrast(${100 + k * 0.6}%) brightness(${100 + k * 0.25}%)`;
+  x.drawImage(c, 0, 0);
+  return out;
+}
+$('printBoost').value = settings.printBoost;
+$('printBoost').onchange = e => { settings.printBoost = +e.target.value; saveSettings(); if ($('sheetDlg').open) { rebuildPiece(); updateSheet(); } };
 
 function openSheet() {
   if (!needDesign()) return;
