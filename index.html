@@ -533,8 +533,26 @@
       <label class="f">Tipo de pieza</label>
       <select id="s3Type">
         <option value="litho">Litofanía (la foto se ve con luz atrás)</option>
-        <option value="relief">Relieve (placa, letrero, llavero)</option>
+        <option value="multi">Multicolor por zonas (CFS)</option>
+        <option value="relief">Relieve de un color (placa, letrero)</option>
       </select>
+      <div id="s3Multi" hidden>
+        <div class="two">
+          <div><label class="f">Colores</label>
+            <select id="s3Colors"><option>2</option><option>3</option><option selected>4</option><option>5</option><option>6</option><option>8</option></select>
+          </div>
+          <div><label class="f">Limpiar detalles</label>
+            <select id="s3Clean"><option value="0">Nada</option><option value="1" selected>Poco</option><option value="2">Medio</option><option value="3">Mucho</option></select>
+          </div>
+        </div>
+        <div class="two">
+          <div><label class="f">Base (mm)</label><input type="number" id="s3MBase" value="1.2" min="0.4" max="10" step="0.2"></div>
+          <div><label class="f">Capa de color (mm)</label><input type="number" id="s3MTop" value="0.6" min="0.2" max="5" step="0.2"></div>
+        </div>
+        <label class="f">Relieve extra por color (mm, 0 = plano)</label>
+        <input type="number" id="s3MStep" value="0" min="0" max="3" step="0.2">
+        <div id="s3Palette" class="designs" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;margin-top:10px"></div>
+      </div>
       <div id="s3Litho">
         <label class="f">Forma</label>
         <select id="s3Shape"><option value="flat">Plana</option><option value="curve">Curva</option></select>
@@ -2433,14 +2451,96 @@ function heightmap() {
     // Lo oscuro sube; en dos niveles queda un escalón exacto para cambiar de color
     const base = Math.max(0.4, num('s3Base')), rel = Math.max(0.2, num('s3Relief2'));
     const two = $('s3Style').value === 'two', thr = num('s3Thr') / 100;
-    for (let k = 0; k < nx * ny; k++) {
-      const L = lum(k);
-      H[k] = base + (two ? (L < thr ? rel : 0) : (1 - L) * rel);
+    const L = new Float32Array(nx * ny);
+    for (let k = 0; k < nx * ny; k++) L[k] = lum(k);
+    if (!two) {
+      // Estira el contraste (del 2% más claro al 2% más oscuro) y suaviza el ruido
+      const sorted = Float32Array.from(L).sort(), lo = sorted[Math.floor(sorted.length * 0.02)], hi = sorted[Math.floor(sorted.length * 0.98)];
+      for (let k = 0; k < L.length; k++) L[k] = Math.min(1, Math.max(0, (L[k] - lo) / Math.max(0.05, hi - lo)));
+      boxBlur(L, nx, ny);
     }
+    for (let k = 0; k < nx * ny; k++) H[k] = base + (two ? (L[k] < thr ? rel : 0) : (1 - L[k]) * rel);
     Object.assign(m, { base, rel, two, top: base + rel });
   }
   return m;
 }
+function boxBlur(A, nx, ny) {
+  const src = Float32Array.from(A);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    let s = 0, n = 0;
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const x = i + di, y = j + dj;
+      if (x >= 0 && y >= 0 && x < nx && y < ny) { s += src[y * nx + x]; n++; }
+    }
+    A[j * nx + i] = s / n;
+  }
+}
+
+/* Multicolor: la imagen se reduce a pocos colores y cada color es una pieza */
+const MULTI_STEP = { '0.3': 0.4, '0.2': 0.3, '0.15': 0.25 }; // a la medida de la boquilla de 0.4 mm
+function quantize() {
+  const src = s3.src, step = MULTI_STEP[$('s3Quality').value] || 0.4;
+  const Wmm = Math.min(CREALITY_HI_MM, Math.max(10, num('s3Width')));
+  const nx = Math.max(2, Math.round(Wmm / step)), ny = Math.max(2, Math.round(Wmm * src.height / src.width / step));
+  const c = document.createElement('canvas'); c.width = nx; c.height = ny;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.fillStyle = '#fff'; x.fillRect(0, 0, nx, ny);
+  if ($('s3Mirror').checked) { x.translate(nx, 0); x.scale(-1, 1); }
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0, nx, ny);
+  const d = x.getImageData(0, 0, nx, ny).data, N = nx * ny, n = +$('s3Colors').value;
+  const lumOf = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+  const dist = (k, c) => (d[k * 4] - c[0]) ** 2 + (d[k * 4 + 1] - c[1]) ** 2 + (d[k * 4 + 2] - c[2]) ** 2;
+  // k-means sobre una muestra de puntos. Se empieza por el color más común y luego por
+  // los más distintos entre sí, para no perder colores pequeños pero importantes (contornos)
+  const stride = Math.max(1, Math.floor(N / 20000)), sample = [];
+  for (let k = 0; k < N; k += stride) sample.push(k);
+  const px = k => [d[k * 4], d[k * 4 + 1], d[k * 4 + 2]];
+  const hist = new Map();
+  for (const k of sample) { const key = (d[k * 4] >> 4) << 8 | (d[k * 4 + 1] >> 4) << 4 | d[k * 4 + 2] >> 4; hist.set(key, (hist.get(key) || 0) + 1); }
+  const topKey = [...hist].sort((a, b) => b[1] - a[1])[0][0];
+  let cent = [px(sample.find(k => ((d[k * 4] >> 4) << 8 | (d[k * 4 + 1] >> 4) << 4 | d[k * 4 + 2] >> 4) === topKey))];
+  const minD = sample.map(k => dist(k, cent[0]));
+  while (cent.length < n) {
+    let far = 0;
+    for (let s = 1; s < sample.length; s++) if (minD[s] > minD[far]) far = s;
+    cent.push(px(sample[far]));
+    sample.forEach((k, s) => { minD[s] = Math.min(minD[s], dist(k, cent[cent.length - 1])); });
+  }
+  const nearest = k => { let best = 0, bd = Infinity; cent.forEach((c, i) => { const v = dist(k, c); if (v < bd) { bd = v; best = i; } }); return best; };
+  for (let it = 0; it < 10; it++) {
+    const acc = cent.map(() => [0, 0, 0, 0]);
+    for (const k of sample) { const a = acc[nearest(k)]; a[0] += d[k * 4]; a[1] += d[k * 4 + 1]; a[2] += d[k * 4 + 2]; a[3]++; }
+    cent = acc.map((a, i) => a[3] ? [a[0] / a[3], a[1] / a[3], a[2] / a[3]] : (() => { const k = sample[Math.floor(Math.random() * sample.length)]; return [d[k * 4], d[k * 4 + 1], d[k * 4 + 2]]; })());
+  }
+  let labels = new Uint8Array(N);
+  for (let k = 0; k < N; k++) labels[k] = nearest(k);
+  // Limpia puntitos sueltos: cada punto toma el color que domina a su alrededor
+  for (let pass = 0; pass < num('s3Clean'); pass++) {
+    const prev = labels; labels = new Uint8Array(N);
+    const cnt = new Uint8Array(n);
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      cnt.fill(0);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const xx = i + di, yy = j + dj;
+        if (xx >= 0 && yy >= 0 && xx < nx && yy < ny) cnt[prev[yy * nx + xx]]++;
+      }
+      let best = prev[j * nx + i];
+      for (let c = 0; c < n; c++) if (cnt[c] > cnt[best]) best = c;
+      labels[j * nx + i] = cnt[best] >= 5 ? best : prev[j * nx + i];
+    }
+  }
+  // Colores usados, del más claro al más oscuro
+  const counts = new Array(n).fill(0);
+  for (let k = 0; k < N; k++) counts[labels[k]]++;
+  const order = cent.map((c, i) => i).filter(i => counts[i] > 0).sort((a, b) => lumOf(...cent[b]) - lumOf(...cent[a]));
+  const remap = new Uint8Array(n); order.forEach((o, i) => { remap[o] = i; });
+  for (let k = 0; k < N; k++) labels[k] = remap[labels[k]];
+  const palette = order.map(o => ({ rgb: cent[o].map(Math.round), share: counts[o] / N }));
+  const base = Math.max(0.4, num('s3MBase')), top = Math.max(0.2, num('s3MTop')), extra = Math.max(0, num('s3MStep'));
+  return { multi: true, labels, palette, nx, ny, step, base, topT: top, extra, top: base + top + extra * (palette.length - 1) };
+}
+const hex = rgb => '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
 
 function draw3dPreview(m) {
   const { H, nx, ny, step } = m, pv = $('s3Pv');
@@ -2470,12 +2570,15 @@ function draw3dPreview(m) {
 }
 
 function curvedOn() { return isLitho() && $('s3Shape').value === 'curve'; }
+const isMulti = () => $('s3Type').value === 'multi';
 function update3d() {
   $('s3Litho').hidden = !isLitho();
-  $('s3Relief').hidden = isLitho();
+  $('s3Relief').hidden = $('s3Type').value !== 'relief';
+  $('s3Multi').hidden = !isMulti();
   $('s3ArcWrap').hidden = !curvedOn();
   $('s3ThrWrap').hidden = $('s3Style').value !== 'two';
   setOut('s3ArcOut', $('s3Arc').value + '°'); setOut('s3ThrOut', $('s3Thr').value + '%');
+  if (isMulti()) { updateMulti(); return; }
   const m = s3.m = heightmap();
   draw3dPreview(m);
   const W = (m.nx - 1) * m.step, Hh = (m.ny - 1) * m.step;
@@ -2489,7 +2592,35 @@ function update3d() {
     ? '<b>Consejos:</b> PLA blanco, relleno 100%, capa de 0.12 mm. ' + (curvedOn() ? 'La curva ya va de pie sobre la cama.' : 'Puedes imprimirla acostada o de pie.')
     : m.two
       ? `<b>Cambio de color:</b> en Creality Print agrega un cambio de filamento a <b>${m.base.toFixed(2)} mm</b> de altura (o asigna el segundo color con el CFS). La base sale de un color y el relieve de otro.`
-      : '<b>Consejos:</b> capa de 0.12–0.16 mm para que se vea el detalle.';
+      : '<b>Consejos:</b> capa de 0.12–0.16 mm para que se vea el detalle. Este modo usa solo lo claro y lo oscuro; para que salgan los colores usa “Multicolor”.';
+}
+
+function updateMulti() {
+  const q = s3.m = quantize(), { labels, palette, nx, ny, step } = q;
+  const pv = $('s3Pv'); pv.width = nx; pv.height = ny; pv.style.background = '#fff';
+  const x = pv.getContext('2d'), img = x.createImageData(nx, ny);
+  for (let k = 0; k < nx * ny; k++) {
+    const [r, g, b] = palette[labels[k]].rgb;
+    img.data[k * 4] = r; img.data[k * 4 + 1] = g; img.data[k * 4 + 2] = b; img.data[k * 4 + 3] = 255;
+  }
+  x.putImageData(img, 0, 0);
+  const pal = $('s3Palette'); pal.innerHTML = '';
+  const chip = (rgb, title, sub) => {
+    const el = document.createElement('div');
+    el.className = 'inline'; el.style.gap = '6px';
+    el.innerHTML = `<span style="width:22px;height:22px;border-radius:6px;border:1px solid var(--line);flex:none;background:${hex(rgb)}"></span><span style="font-size:12px;line-height:1.2"><b></b><br><span class="sub"></span></span>`;
+    el.querySelector('b').textContent = title; el.querySelector('.sub').textContent = sub;
+    pal.appendChild(el);
+  };
+  chip(palette[0].rgb, 'Pieza 0: base', 'color libre');
+  palette.forEach((p, i) => chip(p.rgb, `Pieza ${i + 1}`, `${Math.round(p.share * 100)}%`));
+  const W = nx * step, Hh = ny * step;
+  let info = `Tamaño: ${W.toFixed(0)} × ${Hh.toFixed(0)} mm, alto ${q.top.toFixed(1)} mm · ${palette.length + 1} piezas en un ZIP.`;
+  if (Hh > CREALITY_HI_MM) info += ' ⚠ Es más alta que la cama de la Creality Hi (260 mm): reduce el ancho.';
+  $('s3Info').textContent = info;
+  $('s3PvNote').textContent = 'Así quedarán los colores. Si se pierde un detalle, sube los colores; si hay puntitos, limpia más.';
+  $('s3Tips').innerHTML = '<b>En Creality Print:</b> descomprime el ZIP, arrastra <b>todos los STL juntos</b> y responde <b>“Sí”</b> cuando pregunte si es un solo objeto con varias partes. '
+    + 'Luego, en la lista de objetos, asigna a cada pieza su filamento del CFS (la pieza 0 es la base, puede ser blanca).';
 }
 
 // Malla cerrada: superficie con relieve + fondo + paredes, en STL binario
@@ -2509,21 +2640,7 @@ function buildStl(m) {
   }
   const P = (A, i, j) => { const k = (j * nx + i) * 3; return [A[k], A[k + 1], A[k + 2]]; };
   const per = 2 * (nx - 1) + 2 * (ny - 1), top = 2 * (nx - 1) * (ny - 1);
-  const total = top + (curved ? top : per) + 2 * per;
-  const buf = new ArrayBuffer(84 + total * 50), dv = new DataView(buf);
-  const head = 'Sublima Facil - STL';
-  for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
-  dv.setUint32(80, total, true);
-  let off = 84;
-  // Cada triángulo se orienta hacia afuera según la dirección esperada e
-  const tri = (a, b, c, e) => {
-    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-    let nx_ = uy * vz - uz * vy, ny_ = uz * vx - ux * vz, nz_ = ux * vy - uy * vx;
-    if (nx_ * e[0] + ny_ * e[1] + nz_ * e[2] < 0) { [b, c] = [c, b]; nx_ = -nx_; ny_ = -ny_; nz_ = -nz_; }
-    const l = Math.hypot(nx_, ny_, nz_) || 1;
-    for (const v of [nx_ / l, ny_ / l, nz_ / l, ...a, ...b, ...c]) { dv.setFloat32(off, v, true); off += 4; }
-    dv.setUint16(off, 0, true); off += 2;
-  };
+  const w = stlWriter(top + (curved ? top : per) + 2 * per), tri = w.tri;
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
   const outward = i => { if (!curved) return [0, 0, 1]; const t = ((i + 0.5) / (nx - 1) - 0.5) * arc; return [Math.sin(t), Math.cos(t), 0]; };
   for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
@@ -2556,7 +2673,100 @@ function buildStl(m) {
     tri(P(T, pi, pj), P(T, qi, qj), P(Bt, qi, qj), e);
     tri(P(T, pi, pj), P(Bt, qi, qj), P(Bt, pi, pj), e);
   }
-  return new Blob([buf], { type: 'model/stl' });
+  return new Blob([w.bytes], { type: 'model/stl' });
+}
+
+// STL binario con un número fijo de triángulos; cada triángulo se orienta hacia afuera según e
+function stlWriter(total) {
+  const buf = new ArrayBuffer(84 + total * 50), dv = new DataView(buf);
+  const head = 'Sublima Facil - STL';
+  for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
+  dv.setUint32(80, total, true);
+  let off = 84;
+  const tri = (a, b, c, e) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let nx_ = uy * vz - uz * vy, ny_ = uz * vx - ux * vz, nz_ = ux * vy - uy * vx;
+    if (nx_ * e[0] + ny_ * e[1] + nz_ * e[2] < 0) { [b, c] = [c, b]; nx_ = -nx_; ny_ = -ny_; nz_ = -nz_; }
+    const l = Math.hypot(nx_, ny_, nz_) || 1;
+    for (const v of [nx_ / l, ny_ / l, nz_ / l, ...a, ...b, ...c]) { dv.setFloat32(off, v, true); off += 4; }
+    dv.setUint16(off, 0, true); off += 2;
+  };
+  return { tri, bytes: new Uint8Array(buf) };
+}
+
+// Prisma rectangular de 12 triángulos
+function boxStl(x0, y0, z0, x1, y1, z1) {
+  const w = stlWriter(12);
+  const v = (x, y, z) => [x, y, z];
+  const quad = (a, b, c, d, e) => { w.tri(a, b, c, e); w.tri(a, c, d, e); };
+  quad(v(x0, y0, z1), v(x1, y0, z1), v(x1, y1, z1), v(x0, y1, z1), [0, 0, 1]);
+  quad(v(x0, y0, z0), v(x1, y0, z0), v(x1, y1, z0), v(x0, y1, z0), [0, 0, -1]);
+  quad(v(x0, y0, z0), v(x1, y0, z0), v(x1, y0, z1), v(x0, y0, z1), [0, -1, 0]);
+  quad(v(x0, y1, z0), v(x1, y1, z0), v(x1, y1, z1), v(x0, y1, z1), [0, 1, 0]);
+  quad(v(x0, y0, z0), v(x0, y1, z0), v(x0, y1, z1), v(x0, y0, z1), [-1, 0, 0]);
+  quad(v(x1, y0, z0), v(x1, y1, z0), v(x1, y1, z1), v(x1, y0, z1), [1, 0, 0]);
+  return w.bytes;
+}
+
+// Una pieza cerrada por color: cuadritos de la cuadrícula con su tapa, fondo y paredes
+function colorPartStl(q, color) {
+  const { labels, nx, ny, step } = q;
+  const z0 = q.base, z1 = q.base + q.topT + q.extra * color;
+  const at = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && labels[j * nx + i] === color;
+  let tris = 0;
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    if (!at(i, j)) continue;
+    tris += 4 + 2 * (!at(i - 1, j) + !at(i + 1, j) + !at(i, j - 1) + !at(i, j + 1));
+  }
+  if (!tris) return null;
+  const w = stlWriter(tris);
+  const quad = (a, b, c, d, e) => { w.tri(a, b, c, e); w.tri(a, c, d, e); };
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    if (!at(i, j)) continue;
+    const x0 = i * step, x1 = (i + 1) * step, y0 = (ny - 1 - j) * step, y1 = (ny - j) * step;
+    quad([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1]);
+    quad([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [0, 0, -1]);
+    if (!at(i - 1, j)) quad([x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [-1, 0, 0]);
+    if (!at(i + 1, j)) quad([x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1], [1, 0, 0]);
+    if (!at(i, j - 1)) quad([x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], [0, 1, 0]);
+    if (!at(i, j + 1)) quad([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [0, -1, 0]);
+  }
+  return w.bytes;
+}
+
+// ZIP sin compresión (los STL se descomprimen al instante en cualquier computadora)
+function makeZip(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(6, 0x0800, true);
+    local.setUint16(12, 0x21, true); local.setUint32(14, crc, true);
+    local.setUint32(18, size, true); local.setUint32(22, size, true); local.setUint16(26, name.length, true);
+    parts.push(new Uint8Array(local.buffer), name, f.data);
+    const cd = new DataView(new ArrayBuffer(46));
+    cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true); cd.setUint16(8, 0x0800, true);
+    cd.setUint16(14, 0x21, true); cd.setUint32(16, crc, true); cd.setUint32(20, size, true); cd.setUint32(24, size, true);
+    cd.setUint16(28, name.length, true); cd.setUint32(42, offset, true);
+    central.push(new Uint8Array(cd.buffer), name);
+    offset += 30 + name.length + size;
+  }
+  const cdSize = central.reduce((a, p) => a + p.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+  end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+}
+
+function buildMultiZip(q) {
+  const W = q.nx * q.step, Hh = q.ny * q.step, name = fileName();
+  const files = [{ name: `${name}_0_base.stl`, data: boxStl(0, 0, 0, W, Hh, q.base) }];
+  q.palette.forEach((p, i) => {
+    const data = colorPartStl(q, i);
+    if (data) files.push({ name: `${name}_${i + 1}_color-${hex(p.rgb).slice(1)}.stl`, data });
+  });
+  return makeZip(files);
 }
 
 function open3d() {
@@ -2576,6 +2786,7 @@ document.querySelectorAll('#s3Dlg input, #s3Dlg select').forEach(el => {
 });
 $('s3Download').onclick = () => busy(async () => {
   const m = s3.m || heightmap();
+  if (m.multi) { download(buildMultiZip(m), `${fileName()}_multicolor_${Math.round(m.nx * m.step)}mm.zip`); return; }
   const kind = m.litho ? (curvedOn() ? 'litofania-curva' : 'litofania') : 'relieve';
   download(buildStl(m), `${fileName()}_${kind}_${Math.round((m.nx - 1) * m.step)}mm.stl`);
 });
