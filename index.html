@@ -265,6 +265,16 @@
         <button id="btnAddText" class="btn">T  Texto</button>
         <button id="btnAddQr" class="btn" title="Código QR con tu WhatsApp, página o redes">▦ QR</button>
       </div>
+      <select id="preset" style="margin-bottom:6px">
+        <option value="">✨ Diseño rápido (para empezar)…</option>
+        <option value="cumple">🎂 Cumpleaños</option>
+        <option value="mama">💐 Día de las Madres</option>
+        <option value="papa">👔 Día del Padre</option>
+        <option value="boda">💍 Boda / Aniversario</option>
+        <option value="grad">🎓 Graduación</option>
+        <option value="foto">📷 Foto con nombre</option>
+        <option value="negocio">🏪 Logo de negocio</option>
+      </select>
       <select id="addShape">
         <option value="">+ Añadir figura o marco…</option>
         <option value="heart">❤ Corazón</option>
@@ -434,6 +444,10 @@
       <div class="inline">
         <input type="color" id="bgColor" value="#ffffff">
         <label class="check" style="margin:0"><input type="checkbox" id="bgClear"> Transparente</label>
+      </div>
+      <div class="inline" style="margin-top:8px">
+        <label class="check" style="margin:0"><input type="checkbox" id="bgGrad"> Degradado a</label>
+        <input type="color" id="bgColor2" value="#7b2ff7">
       </div>
     </section>
 
@@ -832,7 +846,7 @@ const idb = (() => {
 let custom = store.get('sf_custom', []);
 let tpl = null, PW = 1, PH = 1, B = 0;
 let layers = [], sel = null, cells = [];
-let bgColor = '#ffffff', bgClear = false;
+let bgColor = '#ffffff', bgClear = false, bgColor2 = null;   // bgColor2: segundo color del degradado (null = liso)
 let guide = null;
 let check = { warnings: [], overlay: null };
 let view = { k: 1, ox: 0, oy: 0, dpr: 1, w: 0, h: 0 };
@@ -846,6 +860,8 @@ const $ = id => document.getElementById(id);
 // Avisos que no bloquean la página; van en la capa superior para verse también sobre las ventanas
 function toast(msg, kind = 'ok', ms = kind === 'bad' ? 7000 : 4000) {
   const box = $('toasts'), el = document.createElement('div');
+  for (const old of box.children) if (old.textContent === msg) old.remove();   // sin repetidos
+  while (box.children.length >= 3) box.firstChild.remove();                    // máximo 3 a la vez
   el.className = 'toast ' + kind; el.textContent = msg;
   box.appendChild(el);
   try { if (box.matches(':popover-open')) box.hidePopover(); box.showPopover(); } catch {}
@@ -1294,7 +1310,7 @@ function render() {
     ctx.save(); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = pattern('checker'); ctx.fillRect(0, 0, view.w, view.h);
     ctx.restore();
-  } else { ctx.fillStyle = bgColor; ctx.fillRect(-B, -B, PW + 2 * B, PH + 2 * B); }
+  } else { ctx.fillStyle = bgFill(ctx); ctx.fillRect(-B, -B, PW + 2 * B, PH + 2 * B); }
   drawLayers(ctx);
   cells.forEach((c, i) => {
     if (layers.some(l => l.type === 'image' && l.cell === i)) return;
@@ -1589,12 +1605,12 @@ let keyT;
 /* ---------- Deshacer / rehacer ---------- */
 function snapshot() {
   return { layers: layers.map(l => ({ ...l, adj: l.adj && { ...l.adj } })), cells: cells.map(c => ({ ...c })),
-           bgColor, bgClear, sel: layers.indexOf(sel) };
+           bgColor, bgColor2, bgClear, sel: layers.indexOf(sel) };
 }
 function applySnap(s) {
   layers = s.layers.map(l => ({ ...l, adj: l.adj && { ...l.adj } }));
   cells = s.cells.map(c => ({ ...c }));
-  bgColor = s.bgColor; bgClear = s.bgClear; sel = layers[s.sel] || null;
+  bgColor = s.bgColor; bgColor2 = s.bgColor2 || null; bgClear = s.bgClear; sel = layers[s.sel] || null; syncBgUI();
   layers.forEach(l => l.fit && refit(l));
   $('bgColor').value = bgColor; $('bgClear').checked = bgClear;
   render(); syncPanel(); scheduleSave(); scheduleCheck();
@@ -1703,7 +1719,7 @@ $('btnRedo').onclick = redo;
 
 /* ---------- Guardado automático y diseños ---------- */
 function docData() {
-  return { tplId: tpl.id, tpl: { ...tpl }, bgColor, bgClear, cells: cells.map(c => ({ ...c })),
+  return { tplId: tpl.id, tpl: { ...tpl }, bgColor, bgColor2, bgClear, cells: cells.map(c => ({ ...c })),
            layers: layers.map(l => { const o = { ...l }; delete o.orig; delete o.cut; delete o._blur; return o; }) };
 }
 let saveT, saveFailed = false;
@@ -1733,7 +1749,7 @@ async function loadDoc(d) {
     }
     layers = ls; cells = d.cells || [];
     layers.forEach(l => l.fit && refit(l));   // por si se guardó con otro sangrado
-    bgColor = d.bgColor || '#ffffff'; bgClear = !!d.bgClear;
+    bgColor = d.bgColor || '#ffffff'; bgColor2 = d.bgColor2 || null; bgClear = !!d.bgClear; syncBgUI();
     $('bgColor').value = bgColor; $('bgClear').checked = bgClear;
   } finally { loading = false; }
   render(); syncPanel(); resetHistory(); scheduleSave();
@@ -1794,6 +1810,59 @@ $('empty').onclick = () => pickFiles({ replace: true });
 $('btnUpload').onclick = () => pickFiles({ replace: true });
 $('btnAddImg').onclick = () => pickFiles({});
 $('btnAddText').onclick = addText;
+
+/* Diseños rápidos: fondo, textos y adornos listos para cambiar; las fotos que ya estén se conservan */
+const PRESETS = {
+  cumple:  { bg: ['#ffd1dc', '#ffe9a8'], title: '¡Feliz Cumpleaños!', tFont: 'Luckiest Guy', tColor: '#e91e63', name: 'Nombre', nFont: 'Pacifico', nColor: '#6a1b9a', deco: 'star', decoColor: '#ffb300' },
+  mama:    { bg: ['#fde2ec', '#f8bbd0'], title: 'Feliz Día Mamá', tFont: 'Great Vibes', tColor: '#ad1457', name: 'Te quiero mucho', nFont: 'Montserrat', nColor: '#880e4f', deco: 'heart', decoColor: '#e91e63' },
+  papa:    { bg: ['#0d47a1', '#1976d2'], title: 'FELIZ DÍA PAPÁ', tFont: 'Bebas Neue', tColor: '#ffffff', name: 'El mejor del mundo', nFont: 'Montserrat', nColor: '#ffd54f', deco: 'star', decoColor: '#ffd54f' },
+  boda:    { bg: ['#fffaf0', '#f5e6c8'], title: 'Ana & Luis', tFont: 'Great Vibes', tColor: '#8d6e3f', name: '14 · 02 · 2026', nFont: 'Abril Fatface', nColor: '#8d6e3f', deco: 'frameRound', decoColor: '#c9a227' },
+  grad:    { bg: ['#111111', '#3a2f0b'], title: '¡Felicidades!', tFont: 'Abril Fatface', tColor: '#ffd54f', name: 'Generación 2026', nFont: 'Montserrat', nColor: '#ffffff', deco: 'star', decoColor: '#ffd54f' },
+  foto:    { bg: ['#ffffff', null], title: '', name: 'Nombre', nFont: 'Pacifico', nColor: '#ffffff', deco: 'frame', decoColor: '#ffffff', photo: true },
+  negocio: { bg: ['#ffffff', null], title: 'MI NEGOCIO', tFont: 'Poppins', tColor: '#1d1b22', name: 'WhatsApp 55 1234 5678', nFont: 'Montserrat', nColor: '#c2187a', deco: 'circle', decoColor: '#c2187a' },
+};
+function applyPreset(key) {
+  const P = PRESETS[key];
+  if (layers.some(l => l.type !== 'image') && !confirm('Se reemplazarán los textos y figuras actuales (las fotos se quedan). ¿Continuar?')) return;
+  layers = layers.filter(l => l.type === 'image');
+  [bgColor, bgColor2] = P.bg; bgClear = false; syncBgUI();
+  const m = Math.min(PW, PH), safe = cm2px(SAFE_CM);
+  const text = (t, font, color, size, y, extra = {}) => {
+    const l = { type: 'text', text: t, font, size: Math.round(size), color, stroke: false, x: PW / 2, y, rot: 0, flip: false, s: 1, align: 'center', ...extra };
+    // Que quepa a lo ancho dentro de la zona segura
+    const w = layerSize(l).w, maxW = PW - 2 * safe - m * 0.1;
+    if (w > maxW) l.size = Math.round(l.size * maxW / w);
+    layers.push(l); return l;
+  };
+  if (P.deco === 'frame' || P.deco === 'frameRound') addShapeQuiet(P.deco, P.decoColor);
+  if (P.title) text(P.title, P.tFont, P.tColor, m * 0.2, PH * 0.3, { curve: key === 'cumple' ? 35 : 0, shadow: key === 'papa' || key === 'grad' });
+  const name = text(P.name, P.nFont, P.nColor, m * (P.title ? 0.12 : 0.16), P.title ? PH * 0.7 : PH * 0.82,
+                    P.photo ? { stroke: true, strokeColor: '#1d1b22', strokeW: 12 } : {});
+  if (P.deco === 'star' || P.deco === 'heart' || P.deco === 'circle') {
+    for (const fx of [0.13, 0.87]) {
+      const d = addShapeQuiet(P.deco, P.decoColor);
+      d.w = d.h = m * 0.14; d.x = PW * fx; d.y = PH * 0.3;
+      if (P.deco === 'circle') { d.fillOn = false; d.strokeW = 8; d.stroke = P.decoColor; }
+    }
+  }
+  sel = name;
+  render(); syncPanel(); commit();
+  if (P.photo && !layers.some(l => l.type === 'image')) { toast('Ahora sube la foto.'); pickFiles({ replace: true }); }
+  else toast('Listo: cambia los textos a tu gusto (doble clic en el texto o en el panel).');
+}
+// Igual que addShape pero sin seleccionar ni guardar en el historial (lo hace quien la llama)
+function addShapeQuiet(kind, color) {
+  const frame = kind === 'frame' || kind === 'frameRound';
+  const l = { type: 'shape', kind: kind === 'frame' ? 'rect' : kind === 'frameRound' ? 'round' : kind,
+              w: Math.min(PW, PH) * 0.5, h: Math.min(PW, PH) * 0.5, x: PW / 2, y: PH / 2, rot: 0, flip: false, s: 1,
+              fill: color, fillOn: !frame, stroke: color, strokeW: frame ? 3 : 0, frame };
+  refit(l);
+  layers.push(l);
+  return l;
+}
+$('preset').onchange = e => { if (e.target.value) applyPreset(e.target.value); e.target.value = ''; };
+// Doble clic en un texto: ir directo a escribir
+cv.addEventListener('dblclick', () => { if (sel && sel.type === 'text') { $('txt').focus(); $('txt').select(); } });
 
 /* Código QR: se genera como imagen nítida y se agrega como una capa más */
 function loadScript(src, globalName, errMsg) {
@@ -2224,6 +2293,20 @@ bind('shStroke', t => { sel.stroke = t.value; });
 bind('shStrokeW', t => { sel.strokeW = +t.value; });
 
 $('bgColor').oninput = e => { bgColor = e.target.value; render(); };
+// Degradado diagonal entre los dos colores, sobre toda el área con sangrado
+function bgFill(c) {
+  if (!bgColor2) return bgColor;
+  const g = c.createLinearGradient(-B, -B, PW + B, PH + B);
+  g.addColorStop(0, bgColor); g.addColorStop(1, bgColor2);
+  return g;
+}
+function syncBgUI() {
+  $('bgColor').value = bgColor; $('bgClear').checked = bgClear;
+  $('bgGrad').checked = !!bgColor2; if (bgColor2) $('bgColor2').value = bgColor2;
+}
+$('bgGrad').onchange = e => { bgColor2 = e.target.checked ? $('bgColor2').value : null; render(); commit(); };
+$('bgColor2').oninput = e => { bgColor2 = e.target.value; $('bgGrad').checked = true; render(); };
+$('bgColor2').onchange = commit;
 $('bgColor').onchange = commit;
 $('bgClear').onchange = e => { bgClear = e.target.checked; render(); commit(); };
 
@@ -2305,7 +2388,7 @@ function exportCanvas({ mirror = false, bleed = true, scale = 1, noBg = false } 
   if (mirror) { x.translate(PW + 2 * b, 0); x.scale(-1, 1); }
   x.translate(b, b);
   x.beginPath(); bleed ? fullShape(x) : trimShape(x); x.clip();
-  if (!bgClear && !noBg) { x.fillStyle = bgColor; x.fillRect(-b, -b, PW + 2 * b, PH + 2 * b); }
+  if (!bgClear && !noBg) { x.fillStyle = bgFill(x); x.fillRect(-b, -b, PW + 2 * b, PH + 2 * b); }
   drawLayers(x);
   return c;
 }
