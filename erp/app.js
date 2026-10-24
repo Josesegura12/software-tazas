@@ -361,6 +361,9 @@ VIEWS.panel = () => {
   if (diasResp === null || diasResp >= 7) {
     alerts += `<div class="alert warn"><span>💾</span><div class="grow"><b>Haz un respaldo.</b> ${diasResp === null ? 'Aún no has descargado ningún respaldo.' : `Tu último respaldo fue hace ${diasResp} días.`} Tus datos viven solo en este navegador: si se borra el historial o cambias de computadora, podrías perderlos.</div><button class="btn primary sm" onclick="App.exportar()">Descargar respaldo</button></div>`;
   }
+  if (!pinCfg()) {
+    alerts += `<div class="alert warn"><span>🔒</span><div class="grow"><b>Pon un PIN a Mi negocio.</b> Así nadie más puede ver tus ventas y clientes en esta computadora.</div><button class="btn primary sm" onclick="App.pinCrear()">Poner PIN</button></div>`;
+  }
   if (hayEjemplos()) {
     alerts += `<div class="alert info"><span>🧪</span><div class="grow">Hay <b>datos de ejemplo</b> (marcados como <span class="badge ej">Ejemplo</span>) para que pruebes el sistema. Cuando estés listo, bórralos o edítalos con tus datos reales.</div><button class="btn sm" onclick="App.borrarEjemplos()">Borrar ejemplos</button></div>`;
   }
@@ -401,6 +404,7 @@ VIEWS.panel = () => {
         ${prox.length ? `<ul class="list">${prox.map(p => `<li><span><a href="#" onclick="App.verPedido('${p.id}');return false;">#${p.folio} ${esc(nomCliente(p))}</a><br><span class="small muted">${esc(resumenItems(p))}</span></span>
           <span class="right"><span class="badge ${p.fechaEntrega < t ? 'bad' : p.fechaEntrega === t ? 'warn' : ''}">${p.fechaEntrega < t ? 'Atrasado · ' : p.fechaEntrega === t ? 'Hoy · ' : ''}${fdate(p.fechaEntrega)}</span><br>${stBadge(p.estado)}</span></li>`).join('')}</ul>` : emptyMsg('🎉', 'No hay entregas en los próximos 7 días.')}
       </div>
+      ${guiasHtml()}
       <div class="card"><h2>📦 Insumos con stock bajo</h2>
         ${bajos.length ? `<ul class="list">${bajos.map(i => `<li><span>${esc(i.nombre)}</span><span class="badge bad">${fqty(i.stock)} ${esc(i.unidad)} (mín. ${fqty(i.minimo)})</span></li>`).join('')}</ul>
           <button class="btn sm mt" onclick="App.go('inventario')">Ir a inventario</button>` : emptyMsg('✅', 'Todo tu inventario está bien surtido.')}
@@ -697,7 +701,7 @@ VIEWS.pedidos = () => {
   const q = qPed.toLowerCase();
   const match = p => !q || (`#${p.folio} ${nomCliente(p)} ${resumenItems(p)} ${p.notas || ''}`).toLowerCase().includes(q);
   const head = pageHead('Cotizaciones y pedidos', 'Desde la cotización hasta la entrega.',
-    `<button class="btn" onclick="App.formPedido(null,'cotizacion')">📝 Nueva cotización</button><button class="btn primary" onclick="App.formPedido(null,'pedido')">+ Nuevo pedido</button>`) +
+    `${skyListo() ? '<button class="btn" onclick="App.webSync()">🌐 Pedidos de la tienda</button>' : ''}<button class="btn" onclick="App.formPedido(null,'cotizacion')">📝 Nueva cotización</button><button class="btn primary" onclick="App.formPedido(null,'pedido')">+ Nuevo pedido</button>`) +
     `<div class="toolbar"><div class="seg"><button class="${pedModo === 'lista' ? 'on' : ''}" onclick="App.pedModo('lista')">☰ Lista</button><button class="${pedModo === 'tablero' ? 'on' : ''}" onclick="App.pedModo('tablero')">▦ Tablero</button></div>
       <input type="search" id="qPed" placeholder="🔍 Buscar folio, cliente o producto…" value="${esc(qPed)}">
       ${pedModo === 'lista' ? `<select id="pedEstado">${opt('activos', 'Pendientes (sin entregar)', pedEstado === 'activos')}${opt('todos', 'Todos', pedEstado === 'todos')}${ESTADOS.map(e => opt(e, e, e === pedEstado)).join('')}</select>` : ''}</div>`;
@@ -896,7 +900,7 @@ App.verPedido = id => {
      <a class="btn" href="${EDITOR_URL}" target="_blank" rel="noopener">🎨 Abrir editor de diseño</a><span class="spacer"></span>
      <button class="btn" type="button" onclick="App.imprimir('${id}')">🖨️ Imprimir</button>
      <a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(telCliente(p), textoWa(p)))}">WhatsApp</a>
-     ${!p.envio && !['Cotización', 'Cancelado'].includes(p.estado) ? `<button class="btn" type="button" onclick="App.skyEnviar('${id}')">📦 Enviar</button>` : ''}
+     ${!p.envio && !p.webEnvio && !['Cotización', 'Cancelado'].includes(p.estado) ? `<button class="btn" type="button" onclick="App.skyEnviar('${id}')">📦 Enviar</button>` : ''}
      <button class="btn" type="button" onclick="App.formPedido('${id}')">✏️ Editar</button>
      ${p.estado === 'Cotización' ? `<button class="btn primary" type="button" onclick="App.convertir('${id}')">✅ Convertir en pedido</button>`
       : next && p.estado !== 'Cancelado' ? `<button class="btn primary" type="button" onclick="App.estado('${id}','${esc(next)}')">➜ ${esc(next)}</button>` : ''}`, true);
@@ -1235,12 +1239,13 @@ function estadoDeCp(cp) {
   return e ? e[2] : '';
 }
 
-async function sky(method, ruta, body) {
+const sky = (method, ruta, body) => conector(method, 'skydropx/' + ruta, body);
+async function conector(method, ruta, body) {
   const c = skyCfg();
-  if (!c.url || !c.clave) throw new Error('Primero configura el conector de envíos en Configuración.');
+  if (!c.url || !c.clave) throw new Error('Primero configura el conector en Configuración → Envíos.');
   let res;
   try {
-    res = await fetch(c.url.replace(/\/+$/, '') + '/skydropx/' + ruta, {
+    res = await fetch(c.url.replace(/\/+$/, '') + '/' + ruta, {
       method, headers: { 'Content-Type': 'application/json', 'X-Clave': c.clave }, body: body ? JSON.stringify(body) : undefined,
     });
   } catch { throw new Error('No se pudo conectar con el conector de envíos. Revisa tu internet y la dirección del conector.'); }
@@ -1298,6 +1303,7 @@ function envioHtml(p) {
     <p><b>${esc(e.paqueteria || '')}</b> ${esc(e.servicio || '')} · ${money(e.total)} <span class="badge ${k}">${esc(txt)}</span>${e.estadoRastreo ? ` <span class="badge">${esc(e.estadoRastreo)}</span>` : ''}</p>
     ${e.rastreo ? `<p>Número de rastreo: <b>${esc(e.rastreo)}</b></p>` : ''}
     ${e.error ? `<p class="alert bad small">${esc(e.error)}</p>` : ''}
+    ${p.webId && e.estado === 'failed' ? `<button class="btn sm" type="button" onclick="App.webReintentar('${p.id}')">🔁 Reintentar guía automática</button>` : ''}
     <div class="btns">
       ${e.etiqueta ? `<a class="btn sm primary" href="${esc(e.etiqueta)}" target="_blank" rel="noopener">🏷️ Etiqueta (PDF)</a>` : ''}
       ${e.urlRastreo ? `<a class="btn sm" href="${esc(e.urlRastreo)}" target="_blank" rel="noopener">🔎 Rastrear</a>` : ''}
@@ -1420,10 +1426,12 @@ function skyConfigHtml() {
       <div class="fgrid c3">
         ${F('largo', 'Largo (cm)', paq.largo, 'type="number" step="0.1"')}${F('ancho', 'Ancho (cm)', paq.ancho, 'type="number" step="0.1"')}${F('alto', 'Alto (cm)', paq.alto, 'type="number" step="0.1"')}
         ${F('peso', 'Peso (kg)', paq.peso, 'type="number" step="0.1"')}
+        ${F('pesoPieza', 'Peso por pieza (kg)', c.pesoPieza || 0.5, 'type="number" step="0.05" title="Para calcular el peso de los pedidos de la tienda"')}
         ${F('contenido', 'Clave SAT del contenido *', c.contenido, 'inputmode="numeric" placeholder="Ej. la de tus guías anteriores"')}
         ${F('embalaje', 'Clave de embalaje', c.embalaje || ENV_DEF.embalaje, 'placeholder="4G = caja de cartón"')}
       </div>
       <p class="hint">La clave SAT es obligatoria para la carta porte. Si ya enviaste con Skydropx, usa <b>Traer datos de mi último envío</b>.</p>
+      <label class="check mt"><input type="checkbox" name="recoger" ${c.recoger === false ? '' : 'checked'}> En la tienda en línea, ofrecer también "Recoger en tienda"</label>
     </form>
     <div class="btns mt"><button class="btn primary" type="button" onclick="App.skyGuardar()">Guardar</button>
       <button class="btn" type="button" onclick="App.skyProbar()">Probar conexión</button>
@@ -1434,14 +1442,24 @@ function skyLeerForm() {
   const d = formData($('#skyF'));
   return {
     url: (d.url || '').trim(), clave: (d.clave || '').trim(), contenido: (d.contenido || '').trim(), embalaje: (d.embalaje || '').trim() || ENV_DEF.embalaje,
+    pesoPieza: num(d.pesoPieza) || 0.5, recoger: !!$('#skyF').recoger.checked,
     origen: { nombre: d.nombre, empresa: d.empresa, telefono: d.telefono, correo: d.correo, cp: (d.cp || '').trim(), calle: d.calle, colonia: d.colonia, municipio: d.municipio, estado: d.estado, referencia: d.referencia },
     paquete: { largo: num(d.largo) || ENV_DEF.largo, ancho: num(d.ancho) || ENV_DEF.ancho, alto: num(d.alto) || ENV_DEF.alto, peso: num(d.peso) || ENV_DEF.peso },
   };
 }
 App.skyGuardar = (silencio) => {
   const c = skyLeerForm();
-  try { localStorage.setItem('erp_skydropx', JSON.stringify(c)); if (!silencio) { toast('Datos de envío guardados en este navegador'); render(); } }
-  catch (e) { fail(e, 'Este navegador no permitió guardar los datos.'); }
+  try { localStorage.setItem('erp_skydropx', JSON.stringify(c)); }
+  catch (e) { return fail(e, 'Este navegador no permitió guardar los datos.'); }
+  if (silencio) return;
+  toast('Datos de envío guardados en este navegador');
+  // La tienda en línea usa estos datos (desde el conector) para cotizar y comprar las guías
+  if (skyListo() && c.origen.cp && c.contenido) {
+    conector('POST', 'erp/config', { origen: c.origen, paquete: c.paquete, contenido: c.contenido, embalaje: c.embalaje, pesoPieza: c.pesoPieza, recoger: c.recoger })
+      .then(() => toast('La tienda en línea ya usa estos datos de envío'))
+      .catch(e => toast('No se pudieron mandar al conector: ' + e.message, 'warn'));
+  }
+  render();
 };
 App.skyProbar = async () => {
   App.skyGuardar(true);
@@ -1472,6 +1490,92 @@ App.skyUltimo = async () => {
     localStorage.setItem('erp_skydropx', JSON.stringify(c));
     toast('Datos traídos de tu último envío. Revísalos y guarda.'); render();
   } catch (e) { fail(e, e.message); }
+};
+
+/* ================= PEDIDOS DE LA TIENDA EN LÍNEA ================= */
+// Los pedidos pagados con tarjeta en la tienda viven en el conector; aquí se traen a Mi negocio
+// con su pago y, si son con envío, con la guía ya comprada.
+function guiasHtml() {
+  const g = S.pedidos.filter(p => p.envio && p.envio.etiqueta && !['Entregado', 'Cancelado'].includes(p.estado) && !p.envio.impresa);
+  return `<div class="card"><h2>🏷️ Guías para imprimir</h2>
+    ${skyListo() ? '<button class="btn sm" onclick="App.webSync()">🌐 Traer pedidos de la tienda</button>' : ''}
+    ${g.length ? `<ul class="list mt">${g.map(p => `<li><span><a href="#" onclick="App.verPedido('${p.id}');return false;">#${p.folio} ${esc(nomCliente(p))}</a><br><span class="small muted">${esc(p.envio.paqueteria || '')} · ${esc(p.envio.rastreo || '')}</span></span>
+      <span class="btns"><a class="btn sm primary" href="${esc(p.envio.etiqueta)}" target="_blank" rel="noopener" onclick="App.guiaImpresa('${p.id}')">🖨️ Imprimir</a></span></li>`).join('')}</ul>`
+      : emptyMsg('📭', 'No hay guías pendientes de imprimir.')}</div>`;
+}
+App.guiaImpresa = async id => {
+  const q = clone(pedido(id));
+  q.envio.impresa = true;
+  if (['Anticipo', 'En diseño'].includes(q.estado)) { q.estado = 'En producción'; (q.historial = q.historial || []).push({ fecha: new Date().toISOString(), estado: 'En producción' }); }
+  try { await commit([['pedidos', q]]); setTimeout(render, 500); } catch (e) { fail(e); }
+};
+const guiaDeWeb = g => g && g.id ? { id: g.id, paqueteria: g.paqueteria, servicio: g.servicio, total: num(g.total), estado: g.estado, rastreo: g.rastreo || '',
+  etiqueta: g.etiqueta || '', urlRastreo: g.urlRastreo || '', error: g.error || '', fecha: new Date().toISOString() } : null;
+
+let syncing = false;
+App.webSync = async (silencio) => {
+  if (syncing || !skyListo()) return;
+  syncing = true;
+  try {
+    const { pedidos: web } = await conector('GET', 'erp/pedidos');
+    const ops = [], nuevos = [], cfg = skyCfg();
+    let folio = num(S.ajustes.folio) || 0, guias = 0, errores = 0;
+    const clientesNuevos = [];
+    for (const w of web || []) {
+      if (['esperando_pago', 'cancelado'].includes(w.estado)) continue;
+      const ya = S.pedidos.find(p => p.webId === w.id);
+      const g = guiaDeWeb(w.guia);
+      if (w.estado === 'guia_error') errores++;
+      if (ya) {
+        // Ya estaba: solo se actualiza la guía cuando llega
+        if (g && (!ya.envio || ya.envio.etiqueta !== g.etiqueta || ya.envio.estado !== g.estado)) {
+          const q = clone(ya); q.envio = Object.assign({}, ya.envio || {}, g); ops.push(['pedidos', q]); if (g.etiqueta && !(ya.envio && ya.envio.etiqueta)) guias++;
+          // El costo de la guía se registra una sola vez, cuando queda lista
+          if (g.estado === 'success' && !(ya.envio && ya.envio.estado === 'success')) ops.push(['gastos', { id: uid(), fecha: today(), categoria: 'Envíos', monto: r2(g.total), nota: `Guía ${g.paqueteria} pedido #${ya.folio} (tienda)` }]);
+        }
+        continue;
+      }
+      // Cliente: por WhatsApp, o uno nuevo
+      const tel = String(w.cliente.telefono || '').slice(-10);
+      let cli = S.clientes.find(c => String(c.whatsapp || '').replace(/\D/g, '').slice(-10) === tel) || clientesNuevos.find(c => c.whatsapp === tel);
+      if (!cli) {
+        cli = { id: uid(), nombre: w.cliente.nombre, whatsapp: tel, correo: w.cliente.correo || '', notas: 'Llegó por la tienda en línea', alta: today(), direccionEnvio: w.direccion || undefined };
+        clientesNuevos.push(cli); ops.push(['clientes', cli]);
+      }
+      const items = w.items.map(it => {
+        const pr = producto(it.id);
+        return { productoId: pr ? pr.id : '', nombre: pr ? pr.nombre : it.nombre, cant: it.cant, precio: r2(it.precio), costo: pr ? costoProducto(pr) : 0, notas: it.notas || '' };
+      });
+      if (w.envio) items.push({ productoId: '', nombre: `Envío ${w.envio.paqueteria} ${w.envio.servicio || ''}`.trim(), cant: 1, precio: r2(w.envio.total), costo: 0, notas: 'Envío pagado por el cliente' });
+      folio++;
+      const fecha = String(w.pagado_en || w.creado).slice(0, 10);
+      const q = {
+        id: uid(), folio, webId: w.id, webEnvio: w.entrega === 'envio', estado: 'En diseño', items, descuento: 0, origen: 'tienda', clienteId: cli.id,
+        pagos: [{ id: uid(), fecha, monto: r2(w.total), metodo: 'Clip', clipId: w.clip && w.clip.id }],
+        fecha, fechaVenta: fecha, fechaEntrega: addDays(today(), 3), descontado: false,
+        notas: `Pedido ${w.id} de la tienda en línea${w.entrega === 'recoger' ? ' · Recoge en tienda' : ''}${w.nota ? ' · ' + w.nota : ''}`,
+        historial: [{ fecha: new Date().toISOString(), estado: 'En diseño' }], destino: w.direccion || undefined, envio: g || undefined,
+      };
+      ops.push(['pedidos', q]);
+      if (g && g.estado === 'success') ops.push(['gastos', { id: uid(), fecha: today(), categoria: 'Envíos', monto: r2(g.total), nota: `Guía ${g.paqueteria} pedido #${folio} (tienda)` }]);
+      if (g && g.etiqueta) guias++;
+      nuevos.push(q);
+    }
+    if (ops.length) { if (nuevos.length) ops.push(aj('folio', folio)); await commit(ops); render(); }
+    const partes = [];
+    if (nuevos.length) partes.push(`${nuevos.length} pedido(s) nuevo(s) de la tienda`);
+    if (guias) partes.push(`${guias} guía(s) lista(s) para imprimir`);
+    if (errores) partes.push(`${errores} con problema en la guía (ábrelos para reintentar)`);
+    if (partes.length) toast('🌐 ' + partes.join(' · '), errores ? 'warn' : 'ok', 7000);
+    else if (!silencio) toast('No hay pedidos nuevos de la tienda.');
+  } catch (e) { if (!silencio) fail(e, e.message); }
+  finally { syncing = false; }
+};
+// Reintentar la guía automática de un pedido de la tienda (el conector la vuelve a intentar en unos minutos)
+App.webReintentar = async id => {
+  const p = pedido(id);
+  try { await conector('POST', `erp/pedidos/${encodeURIComponent(p.webId)}/reintentar`); toast('Listo: el conector volverá a intentar la guía en unos minutos.'); }
+  catch (e) { fail(e, e.message); }
 };
 
 /* ================= 7. GASTOS Y COMPRAS ================= */
@@ -1746,6 +1850,7 @@ VIEWS.config = () => {
         <div class="btns"><button class="btn primary" onclick="App.exportarCatalogo()">⬇️ Exportar catálogo para la tienda</button><a class="btn" href="../tienda/" target="_blank" rel="noopener">Ver tienda</a></div>
       </div>
     </div>
+    ${seguridadHtml()}
     ${clipConfigHtml()}
     ${skyConfigHtml()}
     <div class="card mt"><h2>🧹 Limpieza</h2>
@@ -1832,6 +1937,7 @@ App.exportarCatalogo = async () => {
     }
     const negocio = {};
     ['nombre', 'lema', 'logo', 'whatsapp', 'correo', 'direccion', 'mapsUrl', 'facebook', 'instagram', 'tiktok', 'bienvenida', 'horarios'].forEach(k => { negocio[k] = n[k] || ''; });
+    if (skyCfg().url) negocio.conector = skyCfg().url.replace(/\/+$/, '');
     const cat = { generado: new Date().toISOString(), moneda: 'MXN', negocio, categorias: [...new Set(productos.map(p => p.categoria))], productos };
     download('catalogo.json', JSON.stringify(cat, null, 1));
     openModal('✅ Catálogo exportado', `<p>Se descargó <b>catalogo.json</b> con ${productos.length} producto(s).</p>
@@ -1872,7 +1978,75 @@ App.borrarTodo = async () => {
 }
 
 /* ================= Inicio ================= */
+/* ================= PIN DE ACCESO ================= */
+// Mi negocio se protege con un PIN en este navegador. Mientras no se escriba, no se muestra nada.
+// (Se guarda solo una huella del PIN, nunca el PIN.)
+async function huella(pin, sal) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sal + ':' + pin));
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+const pinCfg = () => { try { return JSON.parse(localStorage.getItem('erp_pin') || 'null'); } catch { return null; } };
+function pantallaPin(titulo, texto, boton, alEnviar, extra = '') {
+  return new Promise(resolve => {
+    const d = document.createElement('div');
+    d.id = 'pinLock';
+    d.style.cssText = 'position:fixed;inset:0;z-index:9999;display:grid;place-items:center;padding:16px;background:var(--bg)';
+    d.innerHTML = `<form class="card" style="width:min(360px,100%);text-align:center">
+      <div style="font-size:42px">🔒</div><h2>${titulo}</h2><p class="muted small">${texto}</p>
+      <input type="password" inputmode="numeric" autocomplete="off" maxlength="12" required placeholder="PIN" style="text-align:center;font-size:22px;letter-spacing:6px">
+      <p class="small" style="color:var(--bad);min-height:1.2em" data-err></p>
+      <button class="btn primary" style="width:100%">${boton}</button>${extra}</form>`;
+    document.body.appendChild(d);
+    const f = d.querySelector('form'), inp = f.querySelector('input');
+    inp.focus();
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const r = await alEnviar(inp.value.trim());
+      if (r === true) { d.remove(); resolve(true); }
+      else { f.querySelector('[data-err]').textContent = r || 'PIN incorrecto'; inp.value = ''; inp.focus(); }
+    };
+    const salir = d.querySelector('[data-salir]');
+    if (salir) salir.onclick = () => { d.remove(); resolve(false); };
+  });
+}
+async function pedirPin() {
+  const c = pinCfg();
+  if (!c || sessionStorage.getItem('erp_ok') === '1') return;
+  let intentos = 0;
+  await pantallaPin('Mi negocio', 'Escribe tu PIN para entrar.', 'Entrar', async pin => {
+    if (++intentos > 5) { await espera(3000); }   // frena a quien intenta adivinar
+    if (await huella(pin, c.sal) !== c.huella) return 'PIN incorrecto';
+    sessionStorage.setItem('erp_ok', '1');
+    return true;
+  });
+}
+App.pinCrear = async () => {
+  const ok = await pantallaPin('Nuevo PIN', 'Elige un PIN de 4 a 12 números. Te lo pediremos cada vez que abras Mi negocio en este navegador.', 'Guardar PIN', async pin => {
+    if (!/^\d{4,12}$/.test(pin)) return 'Usa de 4 a 12 números';
+    const sal = crypto.getRandomValues(new Uint32Array(2)).join('-');
+    localStorage.setItem('erp_pin', JSON.stringify({ sal, huella: await huella(pin, sal) }));
+    sessionStorage.setItem('erp_ok', '1');
+    return true;
+  }, '<button type="button" class="btn" data-salir style="width:100%;margin-top:6px">Cancelar</button>');
+  if (ok) { toast('PIN guardado'); render(); }
+};
+App.pinQuitar = () => {
+  if (!ask('¿Quitar el PIN? Cualquiera que use este navegador podrá entrar a Mi negocio.')) return;
+  localStorage.removeItem('erp_pin'); toast('PIN quitado'); render();
+};
+App.bloquear = () => { sessionStorage.removeItem('erp_ok'); location.reload(); };
+function seguridadHtml() {
+  const tiene = !!pinCfg();
+  return `<div class="card mt"><h2>🔒 Seguridad</h2>
+    <p class="small muted">${tiene ? 'Mi negocio pide tu PIN cada vez que se abre en este navegador.' : '<b>Te recomendamos poner un PIN</b> para que nadie más que tú pueda ver tus ventas y clientes en esta computadora.'}</p>
+    <div class="btns">${tiene ? '<button class="btn" type="button" onclick="App.pinCrear()">Cambiar PIN</button><button class="btn" type="button" onclick="App.bloquear()">Bloquear ahora</button><button class="btn danger" type="button" onclick="App.pinQuitar()">Quitar PIN</button>'
+      : '<button class="btn primary" type="button" onclick="App.pinCrear()">Poner PIN</button>'}</div></div>`;
+}
+
 async function init() {
+  await pedirPin();
+  // El acceso directo a Mi negocio en el editor solo aparece en el navegador del dueño
+  try { localStorage.setItem('erp_dueno', '1'); } catch {}
   $('#nav').addEventListener('click', e => { const b = e.target.closest('button[data-view]'); if (b) go(b.dataset.view); });
   $('#menuBtn').onclick = () => $('#nav').classList.toggle('open');
   $('#btnBackup').onclick = () => openModal('💾 Respaldo', `<p>Tus datos se guardan en <b>este navegador</b>. Descarga un respaldo cada semana y guárdalo en Drive, correo o USB.</p>
@@ -1893,6 +2067,8 @@ async function init() {
   refreshBrand();
   go(location.hash.slice(1) || 'panel');
   cotizacionDesdeEditor();
+  App.webSync(true);
+  setInterval(() => App.webSync(true), 5 * 60 * 1000);
 }
 
 // El editor deja aquí el diseño a cotizar ("Cotizar este diseño"); se abre una cotización ya llena

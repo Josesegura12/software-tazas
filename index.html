@@ -215,7 +215,7 @@
   <div class="brand"><span class="logo">S</span> Sublima Fácil</div>
   <div class="tools">
     <button class="hbtn" id="btnInstall" hidden title="Instala el editor como app; funciona sin internet">⬇ Instalar app</button>
-    <a class="hbtn" href="erp/" target="_blank" rel="noopener" title="Pedidos, clientes, inventario y ventas" style="text-decoration:none">🏪 Mi negocio</a>
+    <a class="hbtn" id="lnkNegocio" href="erp/" target="_blank" rel="noopener" title="Pedidos, clientes, inventario y ventas" style="text-decoration:none" hidden>🏪 Mi negocio</a>
     <a class="hbtn" href="tienda/" target="_blank" rel="noopener" title="Tu tienda en línea" style="text-decoration:none">🛍 Tienda</a>
     <button class="hbtn" id="btnHelp" title="Ayuda y atajos">❓</button>
     <button class="hbtn" id="btnUndo" title="Deshacer (Ctrl+Z)">↶ Deshacer</button>
@@ -1909,6 +1909,9 @@ $('empty').onclick = () => pickFiles({ replace: true });
 $('btnUpload').onclick = () => pickFiles({ replace: true });
 $('btnAddImg').onclick = () => pickFiles({});
 $('btnAddText').onclick = addText;
+// El acceso a Mi negocio solo se muestra en el navegador del dueño (donde ya se abrió Mi negocio)
+$('lnkNegocio').hidden = store.get('erp_dueno', null) !== 1;
+$('btnQuote').hidden = $('lnkNegocio').hidden;
 $('btnHelp').onclick = () => $('helpDlg').showModal();
 // Cotizar: guarda el diseño en "Mis diseños" y abre Mi negocio con una cotización ya llena
 $('btnQuote').onclick = () => {
