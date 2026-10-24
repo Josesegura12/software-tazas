@@ -220,6 +220,7 @@
     <input type="text" id="tplSearch" placeholder="🔍 Buscar producto…" style="margin-bottom:10px">
     <div id="tplList" class="tpl-list"></div>
     <button id="btnNewTpl" class="btn ghost">+ Nueva plantilla</button>
+    <button id="btnCopyTpl" class="btn ghost" title="Copia el producto actual para cambiarle la medida">✎ Cambiar medida del producto actual</button>
   </aside>
 
   <section class="center">
@@ -259,9 +260,10 @@
         <option value="cover">Rellenar (puede recortar orillas)</option>
         <option value="contain">Completa (puede quedar espacio)</option>
       </select>
-      <div class="row r2">
+      <div class="row">
         <button id="btnAddImg" class="btn">+ Imagen</button>
         <button id="btnAddText" class="btn">T  Texto</button>
+        <button id="btnAddQr" class="btn" title="Código QR con tu WhatsApp, página o redes">▦ QR</button>
       </div>
       <select id="addShape">
         <option value="">+ Añadir figura o marco…</option>
@@ -306,6 +308,10 @@
         <button class="btn" id="btnUp" title="Traer al frente">Al frente</button>
         <button class="btn" id="btnDown" title="Enviar atrás">Atrás</button>
         <button class="btn" id="btnDel" style="color:var(--bad)">Eliminar</button>
+      </div>
+      <div class="row r2">
+        <button class="btn" id="btnDup" title="Hacer una copia (Ctrl+D)">⧉ Duplicar</button>
+        <button class="btn" id="btnBothSides" title="Pone la misma imagen a la izquierda y a la derecha del asa">☕ Ambos lados</button>
       </div>
     </section>
 
@@ -467,7 +473,7 @@
 <!-- Nueva plantilla -->
 <dialog id="dlg">
   <form id="tplForm" method="dialog">
-    <h3>Nueva plantilla</h3>
+    <h3 id="tplTitle">Nueva plantilla</h3>
     <label class="f">Nombre del producto</label>
     <input type="text" id="tName" required placeholder="Ej. Taza mágica">
     <div class="two">
@@ -635,6 +641,35 @@
       <p id="s3Tips" class="note"></p>
     </div>
   </div>
+</dialog>
+
+<!-- Código QR -->
+<dialog id="qrDlg">
+  <form id="qrForm" method="dialog">
+    <h3>Código QR</h3>
+    <label class="f">¿Qué abre el QR?</label>
+    <select id="qrType">
+      <option value="wa">Mi WhatsApp</option>
+      <option value="url">Una página o red social</option>
+      <option value="text">Un texto</option>
+    </select>
+    <label class="f" id="qrLabel">Número de WhatsApp (10 dígitos)</label>
+    <input type="text" id="qrValue" required placeholder="5512345678">
+    <div id="qrMsgWrap">
+      <label class="f">Mensaje inicial (opcional)</label>
+      <input type="text" id="qrMsg" placeholder="Hola, quiero hacer un pedido">
+    </div>
+    <label class="f">Color</label>
+    <div class="inline">
+      <input type="color" id="qrColor" value="#111111">
+      <label class="check" style="margin:0"><input type="checkbox" id="qrBg" checked> Fondo blanco</label>
+    </div>
+    <p class="note">Pruébalo con la cámara del celular antes de imprimir. Usa colores oscuros sobre fondo claro.</p>
+    <div class="actions">
+      <button type="button" class="btn" id="qrCancel">Cancelar</button>
+      <button type="submit" class="btn primary">Añadir QR</button>
+    </div>
+  </form>
 </dialog>
 
 <!-- Recortar -->
@@ -842,6 +877,10 @@ function renderTplList() {
         if (tpl.id === t.id) setTemplate(BASE[0]); else renderTplList();
       };
       b.appendChild(d);
+      const ed = document.createElement('span');
+      ed.className = 'del'; ed.style.right = '30px'; ed.textContent = '✎'; ed.title = 'Editar plantilla';
+      ed.onclick = e => { e.stopPropagation(); openTplDialog(t); };
+      b.appendChild(ed);
     }
     list.appendChild(b);
   }
@@ -1165,6 +1204,7 @@ function drawLayer(c, l) {
     const { w, h } = layerSize(l), masked = l.mask && l.mask !== 'none';
     if (masked) { const m = maskDims(l); c.save(); c.beginPath(); shapePath(c, l.mask, m.w, m.h); c.clip(); }
     c.filter = adjFilter(l);
+    if (l.qr) c.imageSmoothingEnabled = false; // bordes del QR nítidos
     c.drawImage(l.cut || l.orig, -w / 2, -h / 2, w, h);
     c.filter = 'none';
     if (masked) c.restore();
@@ -1505,6 +1545,7 @@ document.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
     if (k === 'z' && !e.shiftKey) { undo(); e.preventDefault(); return; }
     if (k === 'y' || (k === 'z' && e.shiftKey)) { redo(); e.preventDefault(); return; }
+    if (k === 'd' && sel) { duplicateSel(); e.preventDefault(); return; }
   }
   if (!sel || typing) return;
   const step = e.shiftKey ? 50 : 5;
@@ -1582,7 +1623,7 @@ function runCheck() {
     : p.x >= m - 1 && p.y >= m - 1 && p.x <= PW - m + 1 && p.y <= PH - m + 1;
   let outText = 0, inHandle = 0;
   for (const l of layers) {
-    const important = l.type === 'text' || (l.type === 'shape' && !l.frame) || (l.type === 'image' && l.mask && l.mask !== 'none');
+    const important = l.type === 'text' || (l.type === 'shape' && !l.frame) || (l.type === 'image' && ((l.mask && l.mask !== 'none') || l.qr));
     if (!important) continue;
     let pts = layerCorners(l);
     // En redondos el contorno de un texto no llega a las esquinas de su caja
@@ -1714,6 +1755,57 @@ $('empty').onclick = () => pickFiles({ replace: true });
 $('btnUpload').onclick = () => pickFiles({ replace: true });
 $('btnAddImg').onclick = () => pickFiles({});
 $('btnAddText').onclick = addText;
+
+/* Código QR: se genera como imagen nítida y se agrega como una capa más */
+function loadScript(src, globalName, errMsg) {
+  if (window[globalName]) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error(errMsg));
+    document.head.appendChild(s);
+  });
+}
+function qrPayload() {
+  const t = $('qrType').value, v = $('qrValue').value.trim();
+  if (t === 'wa') {
+    let num = v.replace(/\D/g, '');
+    if (num.length === 10) num = '52' + num;   // México
+    const msg = $('qrMsg').value.trim();
+    return `https://wa.me/${num}` + (msg ? `?text=${encodeURIComponent(msg)}` : '');
+  }
+  if (t === 'url' && !/^[a-z]+:\/\//i.test(v)) return 'https://' + v;
+  return v;
+}
+function syncQrForm() {
+  const t = $('qrType').value;
+  $('qrLabel').textContent = { wa: 'Número de WhatsApp (10 dígitos)', url: 'Dirección (ej. instagram.com/minegocio)', text: 'Texto' }[t];
+  $('qrValue').placeholder = { wa: '5512345678', url: 'instagram.com/minegocio', text: 'Gracias por tu compra' }[t];
+  $('qrMsgWrap').hidden = t !== 'wa';
+}
+$('qrType').onchange = syncQrForm;
+$('btnAddQr').onclick = () => { syncQrForm(); $('qrDlg').showModal(); $('qrValue').focus(); };
+$('qrCancel').onclick = () => $('qrDlg').close();
+$('qrForm').addEventListener('submit', async () => {
+  try {
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js', 'qrcode',
+      'Para crear el QR necesitas conexión a internet la primera vez.');
+    const qr = qrcode(0, 'M');
+    qr.addData(qrPayload()); qr.make();
+    const n = qr.getModuleCount(), quiet = 2, cell = Math.max(8, Math.ceil(1600 / (n + 2 * quiet)));
+    const c = document.createElement('canvas'); c.width = c.height = (n + 2 * quiet) * cell;
+    const x = c.getContext('2d');
+    if ($('qrBg').checked) { x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); }
+    x.fillStyle = $('qrColor').value;
+    for (let r = 0; r < n; r++) for (let q = 0; q < n; q++) if (qr.isDark(r, q)) x.fillRect((q + quiet) * cell, (r + quiet) * cell, cell, cell);
+    const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+    const img = await blobToImage(blob), side = Math.min(PW, PH) * 0.45;
+    const l = { type: 'image', blob, orig: img, cut: null, x: PW / 2, y: PH / 2, s: side / c.width, rot: 0, flip: false, cell: null,
+                adj: { b: 100, c: 100, s: 100 }, cutTol: 0, mask: 'none', borderW: 0, borderColor: '#ffffff', fit: null, qr: true };
+    layers.push(l); sel = l;
+    render(); syncPanel(); commit();
+    toast('QR añadido. Escanéalo con tu celular para probarlo.');
+  } catch (err) { toast(err.message, 'bad'); }
+});
 $('addShape').onchange = e => { if (e.target.value) addShape(e.target.value); e.target.value = ''; };
 document.querySelectorAll('[data-collage]').forEach(b => b.onclick = () => setCollage(+b.dataset.collage));
 
@@ -1770,6 +1862,7 @@ function syncPanel() {
   }
   document.querySelectorAll('[data-collage]').forEach(b => b.classList.toggle('on', +b.dataset.collage === cells.length && cells.length > 0));
   document.querySelectorAll('[data-fx]').forEach(b => b.classList.toggle('on', type === 'image' && (sel.fx || 'none') === b.dataset.fx));
+  $('btnBothSides').hidden = tpl.mock !== 'mug';
   for (const [id, fit] of [['btnCover', 'cover'], ['btnContain', 'contain'], ['btnStretch', 'stretch'], ['btnBlurFit', 'blur']]) {
     $(id).classList.toggle('on', !!sel && (sel.fit === fit || (sel.fit === 'auto' && autoFit(sel) === fit)));
   }
@@ -1812,6 +1905,26 @@ act('btnRotR', () => { sel.rot = Math.round(sel.rot / 90) * 90 + 90; });
 act('btnFlip', () => { sel.flip = !sel.flip; });
 act('btnUp', () => { layers = layers.filter(l => l !== sel); layers.push(sel); });
 act('btnDown', () => { layers = layers.filter(l => l !== sel); layers.unshift(sel); });
+const cloneLayer = l => ({ ...l, adj: l.adj && { ...l.adj } });
+function duplicateSel() {
+  if (!sel) return;
+  const d = cloneLayer(sel), off = Math.min(PW, PH) * 0.04;
+  d.x += off; d.y += off; d.fit = null;
+  layers.splice(layers.indexOf(sel) + 1, 0, d); sel = d;
+  render(); syncPanel(); commit();
+}
+$('btnDup').onclick = duplicateSel;
+// Taza: la misma pieza centrada en cada lado del asa (las orillas del diseño quedan junto al asa)
+$('btnBothSides').onclick = () => {
+  if (!sel) return;
+  const a = sel, b = cloneLayer(a), { w, h } = layerSize(a);
+  const halfW = PW / 2 - cm2px(HANDLE_CM) - cm2px(SAFE_CM), maxH = PH - 2 * cm2px(SAFE_CM);
+  const s = Math.min(halfW / (w * (a.sx || 1)), maxH / (h * (a.sy || 1)), a.s);
+  for (const [l, x] of [[a, PW / 4], [b, PW * 3 / 4]]) Object.assign(l, { x, y: PH / 2, s, fit: null, blurBg: false, cell: null });
+  layers.splice(layers.indexOf(a) + 1, 0, b);
+  render(); syncPanel(); commit();
+  toast('Listo: la misma imagen en los dos lados de la taza.');
+};
 $('btnDel').onclick = removeSel;
 function removeSel() { layers = layers.filter(l => l !== sel); sel = null; render(); syncPanel(); commit(); }
 
@@ -2113,13 +2226,32 @@ $('guideOp').oninput = e => { settings.guideOpacity = +e.target.value; saveSetti
 
 /* ---------- Nueva plantilla ---------- */
 $('tplSearch').oninput = renderTplList;
-$('btnNewTpl').onclick = () => { $('tplForm').reset(); $('dlg').showModal(); $('tName').focus(); };
+let editingTpl = null;
+// Nueva plantilla, o editar una propia; también sirve para copiar una de las de fábrica con otra medida
+function openTplDialog(t = null, copyFrom = null) {
+  editingTpl = t;
+  $('tplForm').reset();
+  const src = t || copyFrom;
+  $('tplTitle').textContent = t ? 'Editar plantilla' : copyFrom ? 'Copiar plantilla con otra medida' : 'Nueva plantilla';
+  if (src) {
+    $('tName').value = copyFrom ? `${src.name} (mi medida)` : src.name;
+    $('tW').value = src.w; $('tH').value = src.h; $('tShape').value = src.shape; $('tMock').value = src.mock || 'flat';
+  }
+  $('dlg').showModal(); $('tName').focus();
+}
+$('btnNewTpl').onclick = () => openTplDialog();
+$('btnCopyTpl').onclick = () => openTplDialog(null, tpl);
 $('tCancel').onclick = () => $('dlg').close();
 $('tplForm').addEventListener('submit', () => {
-  const t = { id: 'c' + Date.now(), icon: '⭐', custom: true, name: $('tName').value.trim() || 'Mi producto',
-              w: +$('tW').value, h: +$('tH').value, shape: $('tShape').value, mock: $('tMock').value };
-  custom.push(t); store.set('sf_custom', custom);
+  const data = { name: $('tName').value.trim() || 'Mi producto', w: +$('tW').value, h: +$('tH').value,
+                 shape: $('tShape').value, mock: $('tMock').value };
+  if (!(data.w > 0 && data.h > 0)) { toast('Escribe un ancho y un alto mayores a 0.', 'warn'); return; }
+  let t;
+  if (editingTpl) { t = custom.find(c => c.id === editingTpl.id); Object.assign(t, data); }
+  else { t = { id: 'c' + Date.now(), icon: '⭐', custom: true, cat: 'Mis plantillas', ...data }; custom.push(t); }
+  store.set('sf_custom', custom);
   setTemplate(t);
+  toast(editingTpl ? 'Plantilla actualizada.' : 'Plantilla creada.');
 });
 
 /* ---------- Exportar ---------- */
