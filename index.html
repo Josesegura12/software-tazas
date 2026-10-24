@@ -508,7 +508,14 @@
     <button class="x" id="sheetClose" title="Cerrar">✕</button>
   </div>
   <div class="split">
-    <div class="pv-wrap"><canvas id="sheetPv"></canvas></div>
+    <div>
+      <div class="pv-wrap"><canvas id="sheetPv"></canvas></div>
+      <div class="inline" id="sheetNav" style="justify-content:center;margin-top:8px" hidden>
+        <button class="btn" id="sheetPrev" style="width:auto;margin:0">◀</button>
+        <b id="sheetPageInfo"></b>
+        <button class="btn" id="sheetNext" style="width:auto;margin:0">▶</button>
+      </div>
+    </div>
     <div>
       <label class="check" style="font-weight:600"><input type="checkbox" id="sheetMirror"> Imprimir en espejo</label>
       <div id="mirrorWarn" class="note" hidden></div>
@@ -522,6 +529,14 @@
       </select>
       <label class="f">Cantidad de piezas</label>
       <input type="number" id="sheetQty" min="0" step="1" placeholder="Llenar la hoja">
+      <details id="namesWrap">
+        <summary>✨ Nombres personalizados (una pieza por nombre)</summary>
+        <label class="f">Texto que cambia</label>
+        <select id="sheetTextLayer"></select>
+        <label class="f">Nombres (uno por renglón)</label>
+        <textarea id="sheetNames" rows="5" placeholder="Ana&#10;Luis&#10;Sofía"></textarea>
+        <p class="note">Sale una pieza por nombre, en las hojas que hagan falta. Los nombres largos se achican solos para que quepan.</p>
+      </details>
       <label class="f">Separación entre piezas (cm)</label>
       <input type="number" id="sheetGap" min="0" max="3" step="0.1">
       <label class="check"><input type="checkbox" id="sheetMarks"> Marcas de corte</label>
@@ -2332,7 +2347,7 @@ function sheetLayout() {
   return tight.n ? tight : best;
 }
 
-function buildSheet(piece, L, qty) {
+function buildSheet(getPiece, L, qty, start = 0) {
   const toPx = v => v / 2.54 * DPI;
   const c = document.createElement('canvas');
   c.width = cm2px(L.W); c.height = cm2px(L.H);
@@ -2342,6 +2357,7 @@ function buildSheet(piece, L, qty) {
   const sx = (L.W - (L.cols * L.w + (L.cols - 1) * L.gap)) / 2;
   const sy = (L.H - (L.rows * L.h + (L.rows - 1) * L.gap)) / 2;
   for (let i = 0; i < qty; i++) {
+    const piece = getPiece(start + i);
     const col = i % L.cols, row = Math.floor(i / L.cols);
     const px = toPx(sx + col * (L.w + L.gap)), py = toPx(sy + row * (L.h + L.gap));
     x.save();
@@ -2372,23 +2388,55 @@ function buildSheet(piece, L, qty) {
   return c;
 }
 
+/* Nombres en lote: el mismo diseño con un texto distinto en cada pieza */
+const sheetNames = () => $('sheetNames').value.split('\n').map(s => s.trim()).filter(Boolean);
+function namedLayer() { const i = +$('sheetTextLayer').value; return layers[i] && layers[i].type === 'text' ? layers[i] : null; }
+function pieceWithText(l, text, mirror) {
+  const old = { text: l.text, size: l.size };
+  // Puede ocupar el ancho de la zona segura; si no cabe, se achica
+  const w0 = Math.max(layerSize(l).w, (PW - 2 * cm2px(SAFE_CM)) / kx(l) * 0.92);
+  l.text = text;
+  const w1 = layerSize(l).w;
+  if (w1 > w0) l.size = old.size * w0 / w1;
+  const c = exportCanvas({ mirror });
+  Object.assign(l, old);
+  return c;
+}
+// Cada pieza de la impresión; con nombres se genera al momento para no llenar la memoria
+function getSheetPiece(i) {
+  const names = sheetNames(), l = namedLayer();
+  if (l && names.length) return pieceWithText(l, names[i], $('sheetMirror').checked);
+  return sheetPiece;
+}
+function sheetTotal() {
+  const names = sheetNames();
+  if (namedLayer() && names.length) return names.length;
+  const want = parseInt($('sheetQty').value, 10);
+  return want > 0 ? want : sheetL.n;
+}
+let sheetPage = 0;
+const sheetPages = () => sheetL.n ? Math.ceil(sheetTotal() / sheetL.n) : 0;
+const pageQty = p => Math.min(sheetL.n, sheetTotal() - p * sheetL.n);
+
 function updateSheet() {
   sheetL = sheetLayout();
-  const want = parseInt($('sheetQty').value, 10);
-  sheetQty = sheetL.n ? (want > 0 ? Math.min(want, sheetL.n) : sheetL.n) : 0;
-  sheetCanvas = buildSheet(sheetPiece, sheetL, sheetQty);
+  const total = sheetL.n ? sheetTotal() : 0, pages = sheetPages();
+  sheetPage = Math.min(sheetPage, Math.max(0, pages - 1));
+  sheetQty = total;
+  sheetCanvas = buildSheet(getSheetPiece, sheetL, pages ? pageQty(sheetPage) : 0, sheetPage * sheetL.n);
   const pv = $('sheetPv');
   pv.width = 620; pv.height = Math.round(620 * sheetCanvas.height / sheetCanvas.width);
   const pc = pv.getContext('2d');
   pc.imageSmoothingQuality = 'high';
   pc.drawImage(sheetCanvas, 0, 0, pv.width, pv.height);
+  $('sheetNav').hidden = pages < 2;
+  $('sheetPageInfo').textContent = `Hoja ${sheetPage + 1} de ${pages}`;
   const orient = sheetL.o === 'v' ? 'vertical' : 'horizontal';
   $('sheetInfo').textContent = sheetL.n
-    ? `${sheetQty} pieza${sheetQty > 1 ? 's' : ''} en hoja ${sheetL.paper.name} ${orient} (caben ${sheetL.n}).`
+    ? `${total} pieza${total > 1 ? 's' : ''} en ${pages} hoja${pages > 1 ? 's' : ''} ${sheetL.paper.name} ${orient} (caben ${sheetL.n} por hoja).`
     : 'La pieza no cabe en esta hoja. Elige una hoja más grande.';
-  if (want > sheetL.n && sheetL.n) $('sheetInfo').textContent += ` Solo caben ${sheetL.n}; usa otra hoja para el resto.`;
   if (sheetL.tight && sheetL.n) $('sheetInfo').textContent += ' Va casi a la orilla: activa "impresión sin bordes" en tu impresora o usa una hoja más grande.';
-  $('sheetPrint').disabled = $('sheetDownload').disabled = !sheetQty;
+  $('sheetPrint').disabled = $('sheetDownload').disabled = !total;
   renderChecks($('sheetChecks'), $('sheetCheckCard'));
   renderChecks($('checkList'), $('checkCard'));
   const hasText = layers.some(l => l.type === 'text');
@@ -2402,6 +2450,11 @@ function openSheet() {
   $('sheetMirror').checked = $('mirror').checked;
   $('sheetPaper').value = settings.paper; $('sheetOrient').value = settings.orient;
   $('sheetGap').value = settings.gap; $('sheetMarks').checked = settings.marks;
+  const texts = layers.map((l, i) => [l, i]).filter(([l]) => l.type === 'text');
+  $('sheetTextLayer').innerHTML = texts.length
+    ? texts.map(([l, i]) => `<option value="${i}">${esc(l.text.slice(0, 30))}</option>`).join('')
+    : '<option value="-1">Primero agrega un texto al diseño</option>';
+  sheetPage = 0;
   rebuildPiece(); updateSheet();
   $('sheetDlg').showModal();
 }
@@ -2414,26 +2467,40 @@ $('sheetOrient').onchange = e => { settings.orient = e.target.value; saveSetting
 $('sheetGap').onchange = e => { settings.gap = Math.max(0, +e.target.value || 0); saveSettings(); updateSheet(); };
 $('sheetMarks').onchange = e => { settings.marks = e.target.checked; saveSettings(); updateSheet(); };
 $('sheetQty').oninput = updateSheet;
+let namesT;
+$('sheetNames').oninput = () => { clearTimeout(namesT); namesT = setTimeout(() => { sheetPage = 0; updateSheet(); }, 300); };
+$('sheetTextLayer').onchange = updateSheet;
+$('sheetPrev').onclick = () => { if (sheetPage > 0) { sheetPage--; updateSheet(); } };
+$('sheetNext').onclick = () => { if (sheetPage < sheetPages() - 1) { sheetPage++; updateSheet(); } };
 
 const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+// Todas las hojas, una por una (cada hoja se convierte a PNG antes de pasar a la siguiente)
+async function allSheetPngs() {
+  const out = [];
+  for (let p = 0; p < sheetPages(); p++) out.push(await toPng(buildSheet(getSheetPiece, sheetL, pageQty(p), p * sheetL.n)));
+  return out;
+}
 $('sheetPrint').onclick = async () => {
   const w = window.open('', '_blank');
   if (!w) { toast('El navegador bloqueó la ventana de impresión: permite las ventanas emergentes para esta página.', 'bad'); return; }
   w.document.write('<p style="font:16px sans-serif;padding:20px">Preparando impresión…</p>');
-  const url = URL.createObjectURL(await toPng(sheetCanvas));
+  const urls = (await allSheetPngs()).map(b => URL.createObjectURL(b));
   const { W, H } = sheetL;
   // margin:0 evita que el navegador imprima título, fecha y ruta del archivo
   w.document.open();
   w.document.write(`<!doctype html><html><head><title>${esc(tpl.name)}</title>
     <style>@page{size:${W}cm ${H}cm;margin:0}html,body{margin:0;padding:0}
-    img{position:fixed;left:0;top:0;width:${W}cm;height:${H}cm}</style></head>
-    <body><img src="${url}" onload="setTimeout(function(){print()},300)"></body></html>`);
+    img{display:block;width:${W}cm;height:${(H - 0.02).toFixed(2)}cm;break-after:page}img:last-of-type{break-after:auto}</style></head>
+    <body>${urls.map(u => `<img src="${u}">`).join('')}
+    <script>var n=0,imgs=document.images;for(var i=0;i<imgs.length;i++)imgs[i].onload=function(){if(++n===imgs.length)setTimeout(function(){print()},300)};<\/script></body></html>`);
   w.document.close();
 };
-$('sheetDownload').onclick = async () => {
-  const m = $('sheetMirror').checked;
-  download(await toPng(sheetCanvas), `${fileName()}_hoja-${sheetL.paper.name}_${sheetQty}pzs${m ? '_espejo' : ''}.png`);
-};
+$('sheetDownload').onclick = () => busy(async () => {
+  const m = $('sheetMirror').checked, pngs = await allSheetPngs(), base = `${fileName()}_hoja-${sheetL.paper.name}${m ? '_espejo' : ''}`;
+  if (pngs.length === 1) { download(pngs[0], `${base}_${sheetQty}pzs.png`); return; }
+  const files = await Promise.all(pngs.map(async (b, i) => ({ name: `${base}_${i + 1}-de-${pngs.length}.png`, data: new Uint8Array(await b.arrayBuffer()) })));
+  download(makeZip(files), `${base}_${pngs.length}-hojas.zip`);
+});
 
 /* ---------- Vista previa en el producto ---------- */
 let mockDesign = null;
