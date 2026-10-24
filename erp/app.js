@@ -890,11 +890,13 @@ App.verPedido = id => {
       <div class="totals"><ul class="list"><li><span>Subtotal</span><span>${money(t.subtotal)}</span></li>${t.descuento ? `<li><span>Descuento</span><span>− ${money(t.descuento)}</span></li>` : ''}
         <li class="big"><span>Total</span><span>${money(t.total)}</span></li><li><span>Pagado</span><span>${money(t.pagado)}</span></li>
         <li><span>Saldo</span><b style="color:${t.saldo > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(t.saldo)}</b></li><li class="small muted"><span>Costo estimado / ganancia</span><span>${money(t.costo)} / ${money(t.total - t.costo)}</span></li></ul></div>
-    </div>`,
+    </div>
+    ${envioHtml(p)}`,
     `<button class="btn danger" type="button" onclick="App.borrarPedido('${id}')">Borrar</button>
      <a class="btn" href="${EDITOR_URL}" target="_blank" rel="noopener">🎨 Abrir editor de diseño</a><span class="spacer"></span>
      <button class="btn" type="button" onclick="App.imprimir('${id}')">🖨️ Imprimir</button>
      <a class="btn wa" target="_blank" rel="noopener" href="${esc(waLink(telCliente(p), textoWa(p)))}">WhatsApp</a>
+     ${!p.envio && !['Cotización', 'Cancelado'].includes(p.estado) ? `<button class="btn" type="button" onclick="App.skyEnviar('${id}')">📦 Enviar</button>` : ''}
      <button class="btn" type="button" onclick="App.formPedido('${id}')">✏️ Editar</button>
      ${p.estado === 'Cotización' ? `<button class="btn primary" type="button" onclick="App.convertir('${id}')">✅ Convertir en pedido</button>`
       : next && p.estado !== 'Cancelado' ? `<button class="btn primary" type="button" onclick="App.estado('${id}','${esc(next)}')">➜ ${esc(next)}</button>` : ''}`, true);
@@ -1213,6 +1215,265 @@ App.clipQuitar = () => {
   localStorage.removeItem('erp_clip'); toast('Claves quitadas'); render();
 };
 
+/* ================= ENVÍOS CON SKYDROPX ================= */
+// Skydropx no acepta llamadas directas desde el navegador: se usa el conector de Cloudflare
+// (carpeta conector/ del repositorio). Su dirección, clave y la dirección de origen se guardan
+// solo en este navegador.
+const skyCfg = () => { try { return JSON.parse(localStorage.getItem('erp_skydropx') || 'null') || {}; } catch { return {}; } };
+const skyListo = () => { const c = skyCfg(); return !!(c.url && c.clave); };
+const ENV_DEF = { largo: 20, ancho: 15, alto: 15, peso: 1, contenido: '', embalaje: '4G' };
+// Estado a partir de los primeros dos dígitos del código postal
+const CP_ESTADOS = [[1, 16, 'Ciudad de México'], [20, 20, 'Aguascalientes'], [21, 22, 'Baja California'], [23, 23, 'Baja California Sur'],
+  [24, 24, 'Campeche'], [25, 27, 'Coahuila'], [28, 28, 'Colima'], [29, 30, 'Chiapas'], [31, 33, 'Chihuahua'], [34, 35, 'Durango'],
+  [36, 38, 'Guanajuato'], [39, 41, 'Guerrero'], [42, 43, 'Hidalgo'], [44, 49, 'Jalisco'], [50, 57, 'Estado de México'], [58, 61, 'Michoacán'],
+  [62, 62, 'Morelos'], [63, 63, 'Nayarit'], [64, 67, 'Nuevo León'], [68, 71, 'Oaxaca'], [72, 75, 'Puebla'], [76, 76, 'Querétaro'],
+  [77, 77, 'Quintana Roo'], [78, 79, 'San Luis Potosí'], [80, 82, 'Sinaloa'], [83, 85, 'Sonora'], [86, 86, 'Tabasco'], [87, 89, 'Tamaulipas'],
+  [90, 90, 'Tlaxcala'], [91, 96, 'Veracruz'], [97, 97, 'Yucatán'], [98, 99, 'Zacatecas']];
+function estadoDeCp(cp) {
+  const n = parseInt(String(cp).slice(0, 2), 10);
+  const e = CP_ESTADOS.find(([a, b]) => n >= a && n <= b);
+  return e ? e[2] : '';
+}
+
+async function sky(method, ruta, body) {
+  const c = skyCfg();
+  if (!c.url || !c.clave) throw new Error('Primero configura el conector de envíos en Configuración.');
+  let res;
+  try {
+    res = await fetch(c.url.replace(/\/+$/, '') + '/skydropx/' + ruta, {
+      method, headers: { 'Content-Type': 'application/json', 'X-Clave': c.clave }, body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch { throw new Error('No se pudo conectar con el conector de envíos. Revisa tu internet y la dirección del conector.'); }
+  const d = await res.json().catch(() => ({}));
+  if (res.status === 401 && d.error) throw new Error(d.error);
+  if (!res.ok) {
+    // Errores de Skydropx: { errors: { campo: [mensajes] } } o { message }
+    const lista = [];
+    const juntar = (o, pre = '') => Object.entries(o || {}).forEach(([k, v]) => Array.isArray(v) ? lista.push(`${pre}${k}: ${v.join(', ')}`) : typeof v === 'object' ? juntar(v, `${pre}${k} › `) : lista.push(`${pre}${k}: ${v}`));
+    juntar(d.errors);
+    throw new Error(lista.length ? 'Skydropx: ' + lista.join(' · ') : (d.error || d.message || `Error ${res.status} en Skydropx.`));
+  }
+  return d;
+}
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const skyDireccion = a => ({
+  country_code: 'mx', postal_code: String(a.cp || '').trim(), area_level1: a.estado, area_level2: a.municipio, area_level3: a.colonia,
+  street1: a.calle, name: a.nombre, company: a.empresa || a.nombre, phone: String(a.telefono || '').replace(/\D/g, '').slice(-10),
+  email: a.correo || 'sin-correo@ejemplo.com', reference: a.referencia || 'Sin referencia',
+});
+
+// Cotiza y espera a que todas las paqueterías respondan (máx. ~30 s)
+async function skyCotizar(origen, destino, paq) {
+  const q = await sky('POST', 'quotations', { quotation: {
+    address_from: { country_code: 'mx', postal_code: origen.cp, area_level1: origen.estado, area_level2: origen.municipio, area_level3: origen.colonia },
+    address_to: { country_code: 'mx', postal_code: destino.cp, area_level1: destino.estado, area_level2: destino.municipio, area_level3: destino.colonia },
+    parcel: { length: num(paq.largo), width: num(paq.ancho), height: num(paq.alto), weight: num(paq.peso) },
+  } });
+  let d = q;
+  for (let i = 0; i < 10 && !d.is_completed; i++) { await espera(3000); d = await sky('GET', `quotations/${q.id}`); }
+  const tarifas = (d.rates || []).filter(r => r.success && r.total).map(r => ({
+    id: r.id, paqueteria: r.provider_display_name || r.provider_name, servicio: r.provider_service_name, dias: r.days, total: num(r.total),
+  })).sort((a, b) => a.total - b.total);
+  return { id: q.id, tarifas };
+}
+
+// Datos de la guía: rastreo, etiqueta y estado vienen en los paquetes incluidos
+function skyLeerGuia(d) {
+  const a = (d.data || {}).attributes || {};
+  const pk = (d.included || []).find(i => i.type === 'package') || {};
+  const pa = pk.attributes || {};
+  return {
+    id: (d.data || {}).id, paqueteria: a.carrier_name, servicio: a.service_name, total: num(a.total), estado: a.workflow_status,
+    pago: a.payment_status, rastreo: pa.tracking_number || a.master_tracking_number || '', etiqueta: pa.label_url || '',
+    urlRastreo: pa.tracking_url_provider || '', estadoRastreo: pa.tracking_status_display_name || pa.tracking_status || '', error: a.error_detail || '',
+  };
+}
+
+const ENV_ESTADOS = { success: ['Guía lista', 'ok'], in_progress: ['Generando…', 'warn'], pending: ['Generando…', 'warn'], failed: ['Falló', 'bad'], cancelled: ['Cancelada', 'bad'] };
+function envioHtml(p) {
+  const e = p.envio;
+  if (!e) return '';
+  const [txt, k] = ENV_ESTADOS[e.estado] || [e.estado || '—', ''];
+  return `<div class="card mt"><h3>📦 Envío</h3>
+    <p><b>${esc(e.paqueteria || '')}</b> ${esc(e.servicio || '')} · ${money(e.total)} <span class="badge ${k}">${esc(txt)}</span>${e.estadoRastreo ? ` <span class="badge">${esc(e.estadoRastreo)}</span>` : ''}</p>
+    ${e.rastreo ? `<p>Número de rastreo: <b>${esc(e.rastreo)}</b></p>` : ''}
+    ${e.error ? `<p class="alert bad small">${esc(e.error)}</p>` : ''}
+    <div class="btns">
+      ${e.etiqueta ? `<a class="btn sm primary" href="${esc(e.etiqueta)}" target="_blank" rel="noopener">🏷️ Etiqueta (PDF)</a>` : ''}
+      ${e.urlRastreo ? `<a class="btn sm" href="${esc(e.urlRastreo)}" target="_blank" rel="noopener">🔎 Rastrear</a>` : ''}
+      ${e.rastreo ? `<a class="btn sm wa" target="_blank" rel="noopener" href="${esc(waLink(telCliente(p), skyTextoWa(p)))}">Enviar rastreo</a>` : ''}
+      <button class="btn sm" type="button" onclick="App.skyActualizar('${p.id}')">🔄 Actualizar</button>
+    </div></div>`;
+}
+function skyTextoWa(p) {
+  const e = p.envio;
+  return `¡Hola ${nomCliente(p)}! 📦\nTu pedido #${p.folio} de *${neg().nombre}* ya va en camino con ${e.paqueteria}.\n\nNúmero de rastreo: *${e.rastreo}*${e.urlRastreo ? `\nRastréalo aquí: ${e.urlRastreo}` : ''}\n\n¡Gracias por tu compra! 💜`;
+}
+
+App.skyActualizar = async id => {
+  const p = pedido(id);
+  try {
+    const g = skyLeerGuia(await sky('GET', `shipments/${p.envio.id}`));
+    const q = clone(p); q.envio = Object.assign({}, q.envio, g);
+    await commit([['pedidos', q]]); toast('Envío actualizado'); render(); App.verPedido(id);
+  } catch (e) { fail(e, e.message); }
+};
+
+// Formulario: destino (con datos del cliente), paquete, cotizar y elegir tarifa
+App.skyEnviar = id => {
+  if (!skyListo()) { toast('Primero configura el conector de envíos en Configuración.', 'warn'); closeModal(); go('config'); return; }
+  const c = skyCfg(), o = c.origen || {};
+  if (!o.cp || !o.calle) { toast('Primero guarda tu dirección de origen en Configuración → Envíos.', 'warn'); closeModal(); go('config'); return; }
+  const p = pedido(id), cli = cliente(p.clienteId) || {}, dest = (cli.direccionEnvio || p.destino || {});
+  const paq = Object.assign({}, ENV_DEF, c.paquete || {});
+  const F = (k, label, v, extra = '') => `<div><label class="f">${label}</label><input name="${k}" value="${esc(v ?? '')}" ${extra}></div>`;
+  openModal(`Enviar pedido #${p.folio} con Skydropx`, `<form id="mf">
+      <h3>¿A dónde va?</h3>
+      <div class="fgrid">
+        ${F('nombre', 'Nombre de quien recibe *', dest.nombre || cli.nombre, 'required')}${F('telefono', 'Teléfono *', dest.telefono || cli.whatsapp, 'required inputmode="tel"')}
+        ${F('correo', 'Correo', dest.correo || cli.correo, 'type="email"')}${F('cp', 'Código postal *', dest.cp, 'required inputmode="numeric" maxlength="5" id="dCp"')}
+        <div class="full">${F('calle', 'Calle y número *', dest.calle, 'required')}</div>
+        ${F('colonia', 'Colonia *', dest.colonia, 'required')}${F('municipio', 'Municipio o alcaldía *', dest.municipio, 'required')}
+        ${F('estado', 'Estado *', dest.estado, 'required id="dEdo"')}${F('referencia', 'Referencias', dest.referencia, 'placeholder="Entre calles, color de casa…"')}
+      </div>
+      <h3 class="mt">Paquete</h3>
+      <div class="fgrid c3">
+        ${F('largo', 'Largo (cm)', paq.largo, 'type="number" min="1" step="0.1" required')}${F('ancho', 'Ancho (cm)', paq.ancho, 'type="number" min="1" step="0.1" required')}
+        ${F('alto', 'Alto (cm)', paq.alto, 'type="number" min="1" step="0.1" required')}${F('peso', 'Peso (kg)', paq.peso, 'type="number" min="0.1" step="0.1" required')}
+        ${F('valor', 'Valor declarado ($)', r2(tot(p).total), 'type="number" min="0" step="1"')}
+      </div>
+      <div id="skyTarifas" class="mt"></div>
+    </form>`, `<button class="btn" type="button" onclick="App.verPedido('${id}')">Volver al pedido</button><button class="btn primary" form="mf" id="skyGo">🔍 Cotizar envío</button>`, true);
+  const f = $('#mf');
+  $('#dCp').oninput = () => { if (f.cp.value.length === 5 && !f.estado.value) f.estado.value = estadoDeCp(f.cp.value); };
+  let cot = null;
+  f.oninput = e => { if (cot && !['valor', 'tarifa', 'gasto'].includes(e.target.name)) { cot = null; $('#skyTarifas').innerHTML = '<p class="small muted">Cambiaste datos: vuelve a cotizar.</p>'; $('#skyGo').textContent = '🔍 Cotizar envío'; } };
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    const d = formData(f), btn = $('#skyGo');
+    if (!/^\d{5}$/.test(String(d.cp).trim())) return toast('El código postal debe tener 5 dígitos.', 'warn');
+    if (!c.contenido) return toast('Falta la clave SAT del contenido: agrégala en Configuración → Envíos.', 'warn');
+    if (!cot) {
+      btn.disabled = true; btn.textContent = 'Cotizando… (hasta 30 s)';
+      try {
+        cot = await skyCotizar(o, d, d);
+        const lst = cot.tarifas;
+        $('#skyTarifas').innerHTML = lst.length
+          ? `<h3>Elige la paquetería</h3><div class="tbl-wrap"><table class="tbl"><tbody>${lst.map((t, i) => `<tr><td><label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input type="radio" name="tarifa" value="${esc(t.id)}" ${i ? '' : 'checked'}> <b>${esc(t.paqueteria)}</b> ${esc(t.servicio || '')}</label></td><td>${t.dias ? `${t.dias} día${t.dias > 1 ? 's' : ''}` : ''}</td><td class="num"><b>${money(t.total)}</b></td></tr>`).join('')}</tbody></table></div>
+             <label class="check mt"><input type="checkbox" name="gasto" checked> Registrar el costo como gasto (Envíos)</label>
+             <p class="alert warn small mt">Al comprar la guía, Skydropx cobra el envío de tu saldo o tarjeta. Revisa los datos antes.</p>`
+          : '<p class="alert warn">Ninguna paquetería tiene cobertura para esos datos. Revisa el código postal, la colonia y el municipio.</p>';
+        btn.textContent = lst.length ? '✅ Comprar guía' : '🔍 Cotizar envío';
+        if (!lst.length) cot = null;
+      } catch (e) { cot = null; btn.textContent = '🔍 Cotizar envío'; fail(e, e.message); }
+      btn.disabled = false;
+      return;
+    }
+    const rid = (f.querySelector('input[name=tarifa]:checked') || {}).value, t = cot.tarifas.find(x => x.id === rid);
+    if (!t) return toast('Elige una paquetería.', 'warn');
+    if (!ask(`¿Comprar la guía de ${t.paqueteria} ${t.servicio || ''} por ${money(t.total)}?\n\nSkydropx cobrará este envío.`)) return;
+    btn.disabled = true; btn.textContent = 'Generando guía…';
+    try {
+      const destino = { nombre: d.nombre, telefono: d.telefono, correo: d.correo, cp: String(d.cp).trim(), calle: d.calle, colonia: d.colonia, municipio: d.municipio, estado: d.estado, referencia: d.referencia };
+      const s = await sky('POST', 'shipments', { shipment: {
+        rate_id: t.id, printing_format: 'standard',
+        address_from: skyDireccion(o), address_to: skyDireccion(destino),
+        packages: [{ package_number: '1', package_protected: false, declared_value: r2(num(d.valor)), consignment_note: c.contenido || ENV_DEF.contenido, package_type: c.embalaje || ENV_DEF.embalaje }],
+      } });
+      let g = skyLeerGuia(s);
+      for (let i = 0; i < 12 && (!g.etiqueta || !['success', 'failed', 'cancelled'].includes(g.estado)); i++) {
+        await espera(3000); g = skyLeerGuia(await sky('GET', `shipments/${g.id}`));
+      }
+      const q = clone(pedido(id));
+      q.envio = Object.assign({ fecha: new Date().toISOString(), cotizacion: cot.id }, g, { total: g.total || t.total, paqueteria: g.paqueteria || t.paqueteria, servicio: g.servicio || t.servicio });
+      q.destino = destino;
+      const ops = [['pedidos', q]];
+      if (f.gasto && f.gasto.checked && g.estado !== 'failed') ops.push(['gastos', { id: uid(), fecha: today(), categoria: 'Envíos', monto: r2(q.envio.total), nota: `Guía ${q.envio.paqueteria} pedido #${q.folio}${g.rastreo ? ' · ' + g.rastreo : ''}` }]);
+      if (cli.id && !cli.direccionEnvio) { const nc = clone(cli); nc.direccionEnvio = destino; ops.push(['clientes', nc]); }
+      await commit(ops);
+      toast(g.estado === 'failed' ? 'Skydropx no pudo generar la guía; revisa el detalle.' : g.etiqueta ? '¡Guía lista! Descarga la etiqueta.' : 'Guía en proceso: usa "Actualizar" en un momento.', g.estado === 'failed' ? 'bad' : 'ok');
+      render(); App.verPedido(id);
+    } catch (e) { btn.disabled = false; btn.textContent = '✅ Comprar guía'; fail(e, e.message); }
+  };
+};
+
+// Configuración de envíos
+function skyConfigHtml() {
+  const c = skyCfg(), o = c.origen || {}, paq = Object.assign({}, ENV_DEF, c.paquete || {});
+  const F = (k, label, v, extra = '') => `<div><label class="f">${label}</label><input name="${k}" value="${esc(v ?? '')}" ${extra}></div>`;
+  return `<div class="card mt"><h2>📦 Envíos (Skydropx)</h2>
+    <p class="small muted">Cotiza y compra guías de todas las paqueterías desde cada pedido. Necesitas el <b>conector</b> (gratis, en Cloudflare): sigue la guía <a href="https://github.com/Josesegura12/software-tazas/blob/main/conector/README.md" target="_blank" rel="noopener">conector/README.md</a>. Estos datos se guardan solo en este navegador.</p>
+    <form id="skyF">
+      <div class="fgrid">
+        ${F('url', 'Dirección del conector', c.url, 'type="url" placeholder="https://sublima-conector.tu-usuario.workers.dev"')}
+        ${F('clave', 'Clave del conector', c.clave, 'type="password" autocomplete="off"')}
+      </div>
+      <h3 class="mt">Dirección de origen (de donde envías)</h3>
+      <div class="fgrid">
+        ${F('nombre', 'Nombre *', o.nombre)}${F('empresa', 'Negocio', o.empresa || neg().nombre)}
+        ${F('telefono', 'Teléfono *', o.telefono || neg().whatsapp, 'inputmode="tel"')}${F('correo', 'Correo', o.correo || neg().correo, 'type="email"')}
+        ${F('cp', 'Código postal *', o.cp, 'inputmode="numeric" maxlength="5" id="oCp"')}${F('calle', 'Calle y número *', o.calle)}
+        ${F('colonia', 'Colonia *', o.colonia)}${F('municipio', 'Municipio o alcaldía *', o.municipio)}
+        ${F('estado', 'Estado *', o.estado, 'id="oEdo"')}${F('referencia', 'Referencias', o.referencia)}
+      </div>
+      <h3 class="mt">Paquete y contenido más comunes</h3>
+      <div class="fgrid c3">
+        ${F('largo', 'Largo (cm)', paq.largo, 'type="number" step="0.1"')}${F('ancho', 'Ancho (cm)', paq.ancho, 'type="number" step="0.1"')}${F('alto', 'Alto (cm)', paq.alto, 'type="number" step="0.1"')}
+        ${F('peso', 'Peso (kg)', paq.peso, 'type="number" step="0.1"')}
+        ${F('contenido', 'Clave SAT del contenido *', c.contenido, 'inputmode="numeric" placeholder="Ej. la de tus guías anteriores"')}
+        ${F('embalaje', 'Clave de embalaje', c.embalaje || ENV_DEF.embalaje, 'placeholder="4G = caja de cartón"')}
+      </div>
+      <p class="hint">La clave SAT es obligatoria para la carta porte. Si ya enviaste con Skydropx, usa <b>Traer datos de mi último envío</b>.</p>
+    </form>
+    <div class="btns mt"><button class="btn primary" type="button" onclick="App.skyGuardar()">Guardar</button>
+      <button class="btn" type="button" onclick="App.skyProbar()">Probar conexión</button>
+      <button class="btn" type="button" onclick="App.skyUltimo()">Traer datos de mi último envío</button></div>
+  </div>`;
+}
+function skyLeerForm() {
+  const d = formData($('#skyF'));
+  return {
+    url: (d.url || '').trim(), clave: (d.clave || '').trim(), contenido: (d.contenido || '').trim(), embalaje: (d.embalaje || '').trim() || ENV_DEF.embalaje,
+    origen: { nombre: d.nombre, empresa: d.empresa, telefono: d.telefono, correo: d.correo, cp: (d.cp || '').trim(), calle: d.calle, colonia: d.colonia, municipio: d.municipio, estado: d.estado, referencia: d.referencia },
+    paquete: { largo: num(d.largo) || ENV_DEF.largo, ancho: num(d.ancho) || ENV_DEF.ancho, alto: num(d.alto) || ENV_DEF.alto, peso: num(d.peso) || ENV_DEF.peso },
+  };
+}
+App.skyGuardar = (silencio) => {
+  const c = skyLeerForm();
+  try { localStorage.setItem('erp_skydropx', JSON.stringify(c)); if (!silencio) { toast('Datos de envío guardados en este navegador'); render(); } }
+  catch (e) { fail(e, 'Este navegador no permitió guardar los datos.'); }
+};
+App.skyProbar = async () => {
+  App.skyGuardar(true);
+  try { await sky('GET', 'shipments?page=1'); toast('Conexión con Skydropx correcta'); }
+  catch (e) { fail(e, e.message); }
+};
+// Llena origen, contenido y embalaje con los de la guía más reciente de la cuenta
+App.skyUltimo = async () => {
+  App.skyGuardar(true);
+  try {
+    const l = await sky('GET', 'shipments?page=1');
+    const s = (l.data || [])[0];
+    if (!s) return toast('Tu cuenta de Skydropx aún no tiene envíos.', 'warn');
+    const d = await sky('GET', `shipments/${s.id}`);
+    const inc = d.included || [], rel = (d.data.relationships || {});
+    const idFrom = ((rel.address_from || {}).data || {}).id;
+    const af = (inc.find(i => i.type === 'address' && i.id === idFrom) || {}).attributes || {};
+    const pk = (inc.find(i => i.type === 'package') || {}).attributes || {};
+    const c = skyLeerForm();
+    Object.assign(c.origen, {
+      nombre: af.name || c.origen.nombre, empresa: af.company || c.origen.empresa, telefono: af.phone || c.origen.telefono, correo: af.email || c.origen.correo,
+      cp: af.postal_code || c.origen.cp, calle: af.street1 || c.origen.calle, colonia: af.area_level3 || c.origen.colonia,
+      municipio: af.area_level2 || c.origen.municipio, estado: af.area_level1 || c.origen.estado, referencia: af.reference || c.origen.referencia,
+    });
+    if (pk.consignment_note) c.contenido = pk.consignment_note;
+    if (pk.package_type) c.embalaje = pk.package_type;
+    if (pk.length) c.paquete = { largo: num(pk.length), ancho: num(pk.width), alto: num(pk.height), peso: num(pk.weight) || c.paquete.peso };
+    localStorage.setItem('erp_skydropx', JSON.stringify(c));
+    toast('Datos traídos de tu último envío. Revísalos y guarda.'); render();
+  } catch (e) { fail(e, e.message); }
+};
+
 /* ================= 7. GASTOS Y COMPRAS ================= */
 let gDesde = '', gHasta = '', gCat = '';
 VIEWS.gastos = () => {
@@ -1486,6 +1747,7 @@ VIEWS.config = () => {
       </div>
     </div>
     ${clipConfigHtml()}
+    ${skyConfigHtml()}
     <div class="card mt"><h2>🧹 Limpieza</h2>
       <div class="btns">${hayEjemplos() ? '<button class="btn" onclick="App.borrarEjemplos()">Borrar datos de ejemplo</button>' : '<span class="muted small">No hay datos de ejemplo.</span>'}
       <button class="btn danger" onclick="App.borrarTodo()">Borrar TODA la información</button></div></div>`;
@@ -1598,6 +1860,16 @@ App.borrarTodo = async () => {
     await loadAll(); refreshBrand(); toast('Información borrada'); go('panel');
   } catch (e) { fail(e); }
 };
+
+// En Configuración: el estado se llena solo al escribir el código postal de origen
+{
+  const antes = VIEWS.config.after;
+  VIEWS.config.after = () => {
+    antes();
+    const cp = $('#oCp');
+    if (cp) cp.oninput = () => { if (cp.value.length === 5 && !$('#oEdo').value) $('#oEdo').value = estadoDeCp(cp.value); };
+  };
+}
 
 /* ================= Inicio ================= */
 async function init() {

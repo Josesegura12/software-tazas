@@ -45,6 +45,12 @@ El editor se puede **instalar como app** (botón "⬇ Instalar app") y funciona 
 
 Panel, venta rápida, cotizaciones y pedidos (con tablero por estado, notas imprimibles y envío por WhatsApp), clientes, productos con receta de insumos, inventario que se descuenta solo, gastos y compras, calculadora de precios (sublimación e impresión 3D), calendario de entregas, reportes con CSV y configuración del negocio.
 
+**Cobros con tarjeta (Clip):** en Configuración guarda tus claves de Clip; en cada pedido, **💳 Cobrar con Clip** crea un link de pago y un QR para mandar por WhatsApp o mostrar en el mostrador. El ERP revisa solo si ya se pagó y registra el pago.
+
+**Envíos (Skydropx):** en cada pedido, **📦 Enviar** cotiza con todas las paqueterías, compra la guía (con confirmación), da la etiqueta en PDF y el rastreo para mandar por WhatsApp. Requiere instalar una vez el [conector gratis en Cloudflare](conector/README.md).
+
+Las claves de Clip y del conector se guardan **solo en el navegador** (no van en respaldos, en la tienda ni en GitHub).
+
 Los datos se guardan **solo en el navegador de esa computadora**. Descarga un **respaldo** seguido (Configuración → Descargar respaldo) y úsalo para pasar tus datos a otra computadora.
 
 ## Tienda
