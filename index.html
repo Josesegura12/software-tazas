@@ -549,6 +549,7 @@
           <div><label class="f">Base (mm)</label><input type="number" id="s3MBase" value="1.2" min="0.4" max="10" step="0.2"></div>
           <div><label class="f">Capa de color (mm)</label><input type="number" id="s3MTop" value="0.6" min="0.2" max="5" step="0.2"></div>
         </div>
+        <label class="check" style="margin-top:10px"><input type="checkbox" id="s3NoWhite" checked> Ignorar el fondo blanco (solo el dibujo)</label>
         <label class="f">Relieve extra por color (mm, 0 = plano)</label>
         <input type="number" id="s3MStep" value="0" min="0" max="3" step="0.2">
         <div id="s3Palette" class="designs" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;margin-top:10px"></div>
@@ -2419,9 +2420,23 @@ function source3d() {
     const x = c.getContext('2d');
     x.filter = adjFilter(sel);
     x.drawImage(sel.cut || sel.orig, 0, 0, c.width, c.height);
-    return c;
+    return cropToContent(c);
   }
-  return exportCanvas({ bleed: false, scale: Math.min(1, 1600 / Math.max(PW, PH)) });
+  // Sin el fondo de la plantilla: solo lo que está dibujado
+  return cropToContent(exportCanvas({ bleed: false, noBg: true, scale: Math.min(1, 1600 / Math.max(PW, PH)) }));
+}
+// Recorta lo transparente que sobra alrededor
+function cropToContent(c) {
+  const { width: w, height: h } = c, d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (d[(y * w + x) * 4 + 3] > 16) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  }
+  if (x1 < 0 || (x0 === 0 && y0 === 0 && x1 === w - 1 && y1 === h - 1)) return c;
+  const out = document.createElement('canvas');
+  out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+  out.getContext('2d').drawImage(c, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+  return out;
 }
 
 // Imagen → mapa de alturas en mm (una altura por punto de la cuadrícula)
@@ -2477,6 +2492,7 @@ function boxBlur(A, nx, ny) {
 }
 
 /* Multicolor: la imagen se reduce a pocos colores y cada color es una pieza */
+const EMPTY = 255;
 const MULTI_STEP = { '0.3': 0.4, '0.2': 0.3, '0.15': 0.25 }; // a la medida de la boquilla de 0.4 mm
 function quantize() {
   const src = s3.src, step = MULTI_STEP[$('s3Quality').value] || 0.4;
@@ -2484,17 +2500,34 @@ function quantize() {
   const nx = Math.max(2, Math.round(Wmm / step)), ny = Math.max(2, Math.round(Wmm * src.height / src.width / step));
   const c = document.createElement('canvas'); c.width = nx; c.height = ny;
   const x = c.getContext('2d', { willReadFrequently: true });
-  x.fillStyle = '#fff'; x.fillRect(0, 0, nx, ny);
   if ($('s3Mirror').checked) { x.translate(nx, 0); x.scale(-1, 1); }
   x.imageSmoothingQuality = 'high';
   x.drawImage(src, 0, 0, nx, ny);
   const d = x.getImageData(0, 0, nx, ny).data, N = nx * ny, n = +$('s3Colors').value;
   const lumOf = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
   const dist = (k, c) => (d[k * 4] - c[0]) ** 2 + (d[k * 4 + 1] - c[1]) ** 2 + (d[k * 4 + 2] - c[2]) ** 2;
+  // Vacío = transparente, o blanco de fondo que toca la orilla (no se imprime)
+  const empty = new Uint8Array(N);
+  for (let k = 0; k < N; k++) if (d[k * 4 + 3] < 128) empty[k] = 1;
+  if ($('s3NoWhite').checked) {
+    const whiteish = k => d[k * 4 + 3] < 128 || Math.min(d[k * 4], d[k * 4 + 1], d[k * 4 + 2]) > 232;
+    const stack = [];
+    const push = k => { if (empty[k] !== 2 && whiteish(k)) { empty[k] = 2; stack.push(k); } };
+    for (let i = 0; i < nx; i++) { push(i); push((ny - 1) * nx + i); }
+    for (let j = 0; j < ny; j++) { push(j * nx); push(j * nx + nx - 1); }
+    while (stack.length) {
+      const k = stack.pop(), i = k % nx;
+      if (i > 0) push(k - 1);
+      if (i < nx - 1) push(k + 1);
+      if (k >= nx) push(k - nx);
+      if (k < N - nx) push(k + nx);
+    }
+  }
   // k-means sobre una muestra de puntos. Se empieza por el color más común y luego por
   // los más distintos entre sí, para no perder colores pequeños pero importantes (contornos)
   const stride = Math.max(1, Math.floor(N / 20000)), sample = [];
-  for (let k = 0; k < N; k += stride) sample.push(k);
+  for (let k = 0; k < N; k += stride) if (!empty[k]) sample.push(k);
+  if (!sample.length) throw new Error('No hay nada que imprimir: el diseño está vacío o es todo blanco.');
   const px = k => [d[k * 4], d[k * 4 + 1], d[k * 4 + 2]];
   const hist = new Map();
   for (const k of sample) { const key = (d[k * 4] >> 4) << 8 | (d[k * 4 + 1] >> 4) << 4 | d[k * 4 + 2] >> 4; hist.set(key, (hist.get(key) || 0) + 1); }
@@ -2514,29 +2547,32 @@ function quantize() {
     cent = acc.map((a, i) => a[3] ? [a[0] / a[3], a[1] / a[3], a[2] / a[3]] : (() => { const k = sample[Math.floor(Math.random() * sample.length)]; return [d[k * 4], d[k * 4 + 1], d[k * 4 + 2]]; })());
   }
   let labels = new Uint8Array(N);
-  for (let k = 0; k < N; k++) labels[k] = nearest(k);
-  // Limpia puntitos sueltos: cada punto toma el color que domina a su alrededor
+  for (let k = 0; k < N; k++) labels[k] = empty[k] ? EMPTY : nearest(k);
+  // Limpia puntitos sueltos: cada punto toma el color que domina a su alrededor (lo vacío no cambia)
   for (let pass = 0; pass < num('s3Clean'); pass++) {
     const prev = labels; labels = new Uint8Array(N);
     const cnt = new Uint8Array(n);
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const k = j * nx + i;
+      if (prev[k] === EMPTY) { labels[k] = EMPTY; continue; }
       cnt.fill(0);
       for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
         const xx = i + di, yy = j + dj;
-        if (xx >= 0 && yy >= 0 && xx < nx && yy < ny) cnt[prev[yy * nx + xx]]++;
+        if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && prev[yy * nx + xx] !== EMPTY) cnt[prev[yy * nx + xx]]++;
       }
-      let best = prev[j * nx + i];
+      let best = prev[k];
       for (let c = 0; c < n; c++) if (cnt[c] > cnt[best]) best = c;
-      labels[j * nx + i] = cnt[best] >= 5 ? best : prev[j * nx + i];
+      labels[k] = cnt[best] >= 5 ? best : prev[k];
     }
   }
   // Colores usados, del más claro al más oscuro
   const counts = new Array(n).fill(0);
-  for (let k = 0; k < N; k++) counts[labels[k]]++;
+  let filled = 0;
+  for (let k = 0; k < N; k++) if (labels[k] !== EMPTY) { counts[labels[k]]++; filled++; }
   const order = cent.map((c, i) => i).filter(i => counts[i] > 0).sort((a, b) => lumOf(...cent[b]) - lumOf(...cent[a]));
   const remap = new Uint8Array(n); order.forEach((o, i) => { remap[o] = i; });
-  for (let k = 0; k < N; k++) labels[k] = remap[labels[k]];
-  const palette = order.map(o => ({ rgb: cent[o].map(Math.round), share: counts[o] / N }));
+  for (let k = 0; k < N; k++) if (labels[k] !== EMPTY) labels[k] = remap[labels[k]];
+  const palette = order.map(o => ({ rgb: cent[o].map(Math.round), share: counts[o] / filled }));
   const base = Math.max(0.4, num('s3MBase')), top = Math.max(0.2, num('s3MTop')), extra = Math.max(0, num('s3MStep'));
   return { multi: true, labels, palette, nx, ny, step, base, topT: top, extra, top: base + top + extra * (palette.length - 1) };
 }
@@ -2596,14 +2632,18 @@ function update3d() {
 }
 
 function updateMulti() {
-  const q = s3.m = quantize(), { labels, palette, nx, ny, step } = q;
-  const pv = $('s3Pv'); pv.width = nx; pv.height = ny; pv.style.background = '#fff';
+  let q;
+  try { q = s3.m = quantize(); } catch (err) { $('s3Info').textContent = err.message; return; }
+  const { labels, palette, nx, ny, step } = q;
+  const pv = $('s3Pv'); pv.width = nx; pv.height = ny;
   const x = pv.getContext('2d'), img = x.createImageData(nx, ny);
   for (let k = 0; k < nx * ny; k++) {
+    if (labels[k] === EMPTY) continue;
     const [r, g, b] = palette[labels[k]].rgb;
     img.data[k * 4] = r; img.data[k * 4 + 1] = g; img.data[k * 4 + 2] = b; img.data[k * 4 + 3] = 255;
   }
   x.putImageData(img, 0, 0);
+  pv.style.background = `${getComputedStyle(document.body).getPropertyValue('--stage')} url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='8' height='8' fill='%23cfcfcf'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%23cfcfcf'/%3E%3C/svg%3E")`;
   const pal = $('s3Palette'); pal.innerHTML = '';
   const chip = (rgb, title, sub) => {
     const el = document.createElement('div');
@@ -2694,25 +2734,10 @@ function stlWriter(total) {
   return { tri, bytes: new Uint8Array(buf) };
 }
 
-// Prisma rectangular de 12 triángulos
-function boxStl(x0, y0, z0, x1, y1, z1) {
-  const w = stlWriter(12);
-  const v = (x, y, z) => [x, y, z];
-  const quad = (a, b, c, d, e) => { w.tri(a, b, c, e); w.tri(a, c, d, e); };
-  quad(v(x0, y0, z1), v(x1, y0, z1), v(x1, y1, z1), v(x0, y1, z1), [0, 0, 1]);
-  quad(v(x0, y0, z0), v(x1, y0, z0), v(x1, y1, z0), v(x0, y1, z0), [0, 0, -1]);
-  quad(v(x0, y0, z0), v(x1, y0, z0), v(x1, y0, z1), v(x0, y0, z1), [0, -1, 0]);
-  quad(v(x0, y1, z0), v(x1, y1, z0), v(x1, y1, z1), v(x0, y1, z1), [0, 1, 0]);
-  quad(v(x0, y0, z0), v(x0, y1, z0), v(x0, y1, z1), v(x0, y0, z1), [-1, 0, 0]);
-  quad(v(x1, y0, z0), v(x1, y1, z0), v(x1, y1, z1), v(x1, y0, z1), [1, 0, 0]);
-  return w.bytes;
-}
-
-// Una pieza cerrada por color: cuadritos de la cuadrícula con su tapa, fondo y paredes
-function colorPartStl(q, color) {
-  const { labels, nx, ny, step } = q;
-  const z0 = q.base, z1 = q.base + q.topT + q.extra * color;
-  const at = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && labels[j * nx + i] === color;
+// Pieza cerrada hecha de los cuadritos de la cuadrícula donde inside(k) es verdadero
+function partStl(q, inside, z0, z1) {
+  const { nx, ny, step } = q;
+  const at = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && inside(j * nx + i);
   let tris = 0;
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     if (!at(i, j)) continue;
@@ -2760,10 +2785,11 @@ function makeZip(files) {
 }
 
 function buildMultiZip(q) {
-  const W = q.nx * q.step, Hh = q.ny * q.step, name = fileName();
-  const files = [{ name: `${name}_0_base.stl`, data: boxStl(0, 0, 0, W, Hh, q.base) }];
+  const name = fileName(), L = q.labels;
+  // La base toma la forma del dibujo (no incluye las partes vacías)
+  const files = [{ name: `${name}_0_base.stl`, data: partStl(q, k => L[k] !== EMPTY, 0, q.base) }];
   q.palette.forEach((p, i) => {
-    const data = colorPartStl(q, i);
+    const data = partStl(q, k => L[k] === i, q.base, q.base + q.topT + q.extra * i);
     if (data) files.push({ name: `${name}_${i + 1}_color-${hex(p.rgb).slice(1)}.stl`, data });
   });
   return makeZip(files);
