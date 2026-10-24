@@ -1,7 +1,7 @@
 // Guarda el editor y sus recursos para que funcione sin internet.
-// Páginas: primero la red (para recibir mejoras) y si no hay conexión, la copia guardada.
-// Lo demás (letras, librerías, imágenes): la copia guardada y se actualiza en segundo plano.
-const CACHE = 'sublima-facil-v1';
+// Archivos del sitio: primero la red (para recibir mejoras) y si no hay conexión, la copia guardada.
+// Letras y librerías externas: la copia guardada y se actualiza en segundo plano.
+const CACHE = 'sublima-facil-v2';
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(['./', './index.html', './manifest.webmanifest', './icon.svg'])).catch(() => {}));
@@ -21,12 +21,13 @@ self.addEventListener('fetch', e => {
     || /^(fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net)$/.test(url.hostname);
   if (!cacheable) return;
 
-  if (req.mode === 'navigate' || url.pathname.endsWith('.json')) {
+  // Lo de este sitio (páginas, código, catálogo): primero la red para recibir siempre lo más nuevo
+  if (req.mode === 'navigate' || url.origin === location.origin) {
     e.respondWith(fetch(req).then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(req, copy));
       return res;
-    }).catch(() => caches.match(req).then(r => r || caches.match('./index.html'))));
+    }).catch(() => caches.match(req).then(r => r || (req.mode === 'navigate' ? caches.match('./index.html') : Response.error()))));
     return;
   }
 

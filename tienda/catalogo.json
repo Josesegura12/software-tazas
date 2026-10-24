@@ -1,0 +1,28 @@
+{
+ "generado": "2026-10-23T12:00:00.000Z",
+ "moneda": "MXN",
+ "negocio": {
+  "nombre": "Sublima Fácil Regalos",
+  "lema": "Regalos personalizados que enamoran",
+  "logo": "",
+  "whatsapp": "5512345678",
+  "correo": "hola@ejemplo.com",
+  "direccion": "Calle Ejemplo 123, Col. Centro, Ciudad de México",
+  "mapsUrl": "https://www.google.com/maps/search/?api=1&query=Z%C3%B3calo+Ciudad+de+M%C3%A9xico",
+  "facebook": "https://facebook.com/",
+  "instagram": "https://instagram.com/",
+  "tiktok": "",
+  "bienvenida": "Personalizamos tazas, termos, playeras, cojines, llaveros y figuras 3D con tu foto, logo o frase favorita. ¡Cuéntanos tu idea y la hacemos realidad!",
+  "horarios": "Lunes a viernes 10:00–19:00 · Sábado 10:00–14:00"
+ },
+ "categorias": ["Tazas", "Termos", "Playeras", "Cojines", "Llaveros", "Plumas", "Impresión 3D"],
+ "productos": [
+  {"id": "ej-p-taza", "nombre": "Taza 11 oz personalizada", "categoria": "Tazas", "precio": 150, "descripcion": "Taza blanca de cerámica de 11 oz con tu foto, logo o frase. Apta para microondas.", "tiempo": "1 día", "emoji": "☕", "foto": ""},
+  {"id": "ej-p-termo", "nombre": "Termo 20 oz personalizado", "categoria": "Termos", "precio": 380, "descripcion": "Termo de acero inoxidable de doble pared, mantiene frío y caliente. Incluye tapa.", "tiempo": "2 días", "emoji": "🥤", "foto": ""},
+  {"id": "ej-p-playera", "nombre": "Playera personalizada (talla M)", "categoria": "Playeras", "precio": 250, "descripcion": "Playera blanca de poliéster con diseño a todo color. Tallas CH a XG.", "tiempo": "1–2 días", "emoji": "👕", "foto": ""},
+  {"id": "ej-p-cojin", "nombre": "Cojín 40×40 personalizado", "categoria": "Cojines", "precio": 280, "descripcion": "Cojín suave con relleno incluido y tu foto favorita. Ideal para regalo.", "tiempo": "2 días", "emoji": "🛋️", "foto": ""},
+  {"id": "ej-p-llavero", "nombre": "Llavero MDF personalizado", "categoria": "Llaveros", "precio": 45, "descripcion": "Llavero de MDF a doble cara con argolla metálica.", "tiempo": "1 día", "emoji": "🔑", "foto": ""},
+  {"id": "ej-p-pluma", "nombre": "Pluma personalizada", "categoria": "Plumas", "precio": 40, "descripcion": "Pluma con tu nombre o logo. Perfecta para eventos y empresas.", "tiempo": "1 día", "emoji": "🖊️", "foto": ""},
+  {"id": "ej-p-fig3d", "nombre": "Figura 3D (hasta 10 cm)", "categoria": "Impresión 3D", "precio": 220, "descripcion": "Figura impresa en 3D en PLA del color que elijas. Llaveros, toppers, macetas y más.", "tiempo": "2–3 días", "emoji": "🧸", "foto": ""}
+ ]
+}
