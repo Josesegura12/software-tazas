@@ -576,7 +576,12 @@
   </div>
   <div class="split">
     <div>
-      <div class="pv-wrap"><canvas id="s3Pv" style="image-rendering:auto"></canvas></div>
+      <div class="row r2" style="margin-bottom:8px">
+        <button class="btn on" id="s3View2d">🖼 Vista plana</button>
+        <button class="btn" id="s3View3d">🧊 Vista 3D (gírala)</button>
+      </div>
+      <div class="pv-wrap" id="s3Wrap2d"><canvas id="s3Pv" style="image-rendering:auto"></canvas></div>
+      <div class="pv-wrap" id="s3Wrap3d" hidden style="padding:0;overflow:hidden"><canvas id="s3Gl" style="width:100%;height:440px;max-height:none;box-shadow:none;background:transparent;cursor:grab;touch-action:none"></canvas></div>
       <p id="s3PvNote" class="note" style="text-align:center"></p>
     </div>
     <div>
@@ -611,6 +616,7 @@
           <option value="stl">Una pieza de un solo color (.stl)</option>
         </select>
         <label class="check" style="margin-top:10px"><input type="checkbox" id="s3NoWhite" checked> Ignorar el fondo blanco (solo el dibujo)</label>
+        <label class="check"><input type="checkbox" id="s3Loop"> 🔑 Argolla para llavero (arriba)</label>
         <label class="f">Relieve extra por color (mm, 0 = plano)</label>
         <input type="number" id="s3MStep" value="0" min="0" max="3" step="0.2">
         <div id="s3Palette" class="designs" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;margin-top:10px"></div>
@@ -3012,9 +3018,35 @@ function quantize() {
   for (let k = 0; k < N; k++) if (labels[k] !== EMPTY) labels[k] = remap[labels[k]];
   const palette = order.map(o => ({ rgb: cent[o].map(Math.round), share: counts[o] / filled }));
   const base = Math.max(0.4, num('s3MBase')), top = Math.max(0.2, num('s3MTop')), extra = Math.max(0, num('s3MStep'));
-  return { multi: true, labels, palette, nx, ny, step, base, topT: top, extra, top: base + top + extra * (palette.length - 1) };
+  let ny2 = ny;
+  if ($('s3Loop').checked) ({ labels, ny: ny2 } = addLoop(labels, nx, ny, step));
+  return { multi: true, labels, palette, nx, ny: ny2, step, base, topT: top, extra, top: base + top + extra * (palette.length - 1) };
 }
 const hex = rgb => '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+
+// Argolla de llavero arriba al centro: aro de 8 mm con agujero de 4 mm, encimado 1.5 mm en el dibujo
+const LOOP = 254;
+function addLoop(labels, nx, ny, step) {
+  const outer = 4 / step, inner = 2 / step, ov = 1.5 / step;
+  let top = -1;
+  for (let j = 0; j < ny && top < 0; j++) for (let i = 0; i < nx; i++) if (labels[j * nx + i] !== EMPTY) { top = j; break; }
+  if (top < 0) return { labels, ny };
+  // Centro horizontal: el de lo que hay en las primeras filas del dibujo
+  let x0 = nx, x1 = -1;
+  for (let j = top; j < Math.min(ny, top + Math.ceil(ov) + 1); j++) for (let i = 0; i < nx; i++) {
+    if (labels[j * nx + i] !== EMPTY) { x0 = Math.min(x0, i); x1 = Math.max(x1, i); }
+  }
+  const add = Math.max(0, Math.ceil(2 * outer - ov - top) + 1), ny2 = ny + add;
+  const out = new Uint8Array(nx * ny2).fill(EMPTY);
+  out.set(labels, add * nx);
+  const cx = (x0 + x1 + 1) / 2, cy = top + add - (outer - ov);
+  for (let j = 0; j < ny2; j++) for (let i = 0; i < nx; i++) {
+    const d = Math.hypot(i + 0.5 - cx, j + 0.5 - cy), k = j * nx + i;
+    if (d < inner) out[k] = EMPTY;
+    else if (d <= outer && out[k] === EMPTY) out[k] = LOOP;
+  }
+  return { labels: out, ny: ny2 };
+}
 
 function draw3dPreview(m) {
   const { H, nx, ny, step } = m, pv = $('s3Pv');
@@ -3079,7 +3111,7 @@ function updateMulti() {
   const x = pv.getContext('2d'), img = x.createImageData(nx, ny);
   for (let k = 0; k < nx * ny; k++) {
     if (labels[k] === EMPTY) continue;
-    const [r, g, b] = palette[labels[k]].rgb;
+    const [r, g, b] = palette[labels[k] === LOOP ? 0 : labels[k]].rgb;
     img.data[k * 4] = r; img.data[k * 4 + 1] = g; img.data[k * 4 + 2] = b; img.data[k * 4 + 3] = 255;
   }
   x.putImageData(img, 0, 0);
@@ -3242,7 +3274,7 @@ function multiParts(q) {
   const parts = [{ name: 'Base', rgb: q.palette[0].rgb, tris: partTris(q, k => L[k] !== EMPTY, 0, () => q.base) }];
   q.palette.forEach((p, i) => {
     const z1 = q.base + q.topT + q.extra * i;
-    const tris = partTris(q, k => L[k] === i, q.base, () => z1);
+    const tris = partTris(q, k => L[k] === i || (i === 0 && L[k] === LOOP), q.base, () => z1);
     if (tris.length) parts.push({ name: `Color ${i + 1} ${hex(p.rgb)}`, rgb: p.rgb, tris, color: i });
   });
   return parts;
@@ -3282,10 +3314,11 @@ function buildMultiZip(q) {
 }
 
 // Una sola pieza de un color: cada zona a su altura (los colores se notan por el relieve)
-function buildSingleStl(q) {
+function singleTris(q) {
   const L = q.labels;
-  return new Blob([stlFromTris(partTris(q, k => L[k] !== EMPTY, 0, k => q.base + q.topT + q.extra * L[k]))], { type: 'model/stl' });
+  return partTris(q, k => L[k] !== EMPTY, 0, k => q.base + q.topT + q.extra * (L[k] === LOOP ? 0 : L[k]));
 }
+function buildSingleStl(q) { return new Blob([stlFromTris(singleTris(q))], { type: 'model/stl' }); }
 
 // 3MF: un solo objeto con una parte por color y su filamento ya asignado
 // (Creality Print y otros laminadores basados en Orca leen el filamento de Metadata/model_settings.config)
@@ -3345,10 +3378,87 @@ function open3d() {
   $('s3Dlg').showModal();
 }
 let s3T;
-const update3dSoon = () => { clearTimeout(s3T); s3T = setTimeout(update3d, 120); };
+const update3dSoon = () => { clearTimeout(s3T); s3T = setTimeout(() => { update3d(); if (gl3.on) show3dSoon(); }, 120); };
+
+/* Vista 3D con three.js: la misma malla que se descarga, para girarla con el ratón o el dedo */
+const gl3 = { on: false, r: null };
+let show3dT;
+const show3dSoon = () => { clearTimeout(show3dT); show3dT = setTimeout(() => show3d().catch(err => toast(err.message, 'bad')), 250); };
+function stlBytesToTris(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), n = dv.getUint32(80, true), F = new Float32Array(n * 9);
+  for (let t = 0; t < n; t++) for (let v = 0; v < 9; v++) F[t * 9 + v] = dv.getFloat32(84 + t * 50 + 12 + v * 4, true);
+  return F;
+}
+async function show3d() {
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js', 'THREE', 'La vista 3D necesita conexión a internet la primera vez.');
+  const m = s3.m;
+  if (!m) return;
+  if (!gl3.r) {
+    const canvas = $('s3Gl');
+    const r = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    r.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    const scene = new THREE.Scene(), cam = new THREE.PerspectiveCamera(35, 1, 0.1, 5000);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 0.75));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 2, 1.5); scene.add(sun);
+    const back = new THREE.DirectionalLight(0xffffff, 0.3); back.position.set(-1, -0.5, -1); scene.add(back);
+    const group = new THREE.Group(); scene.add(group);
+    Object.assign(gl3, { r, scene, cam, group, rx: -0.9, ry: 0, dist: 1 });
+    let dragging = null;
+    canvas.addEventListener('pointerdown', e => { dragging = { x: e.clientX, y: e.clientY, rx: gl3.rx, ry: gl3.ry }; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      gl3.ry = dragging.ry + (e.clientX - dragging.x) * 0.01;
+      gl3.rx = Math.max(-1.6, Math.min(1.6, dragging.rx + (e.clientY - dragging.y) * 0.01));
+      draw3d();
+    });
+    canvas.addEventListener('pointerup', () => { dragging = null; });
+    canvas.addEventListener('wheel', e => { e.preventDefault(); gl3.dist *= Math.exp(e.deltaY * 0.001); draw3d(); }, { passive: false });
+  }
+  // Piezas con su color (en litofanía y relieve, una sola pieza clara)
+  let parts;
+  if (m.multi) parts = $('s3Out').value === 'stl' ? [{ tris: singleTris(m), rgb: [225, 222, 230] }] : multiParts(m);
+  else parts = [{ tris: stlBytesToTris(new Uint8Array(await buildStl(m).arrayBuffer())), rgb: m.litho ? [245, 240, 228] : [215, 212, 222] }];
+  const { group } = gl3;
+  for (const ch of [...group.children]) { group.remove(ch); ch.geometry.dispose(); ch.material.dispose(); }
+  const box = new THREE.Box3();
+  for (const p of parts) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(p.tris), 3));
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(p.rgb[0] / 255, p.rgb[1] / 255, p.rgb[2] / 255), roughness: 0.55, metalness: 0.05, flatShading: !!m.multi });
+    const mesh = new THREE.Mesh(geo, mat);
+    group.add(mesh);
+    geo.computeBoundingBox(); box.union(geo.boundingBox);
+  }
+  // Centrar la pieza en el origen
+  const center = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+  group.children.forEach(ch => ch.position.set(-center.x, -center.y, -center.z));
+  gl3.radius = Math.max(size.x, size.y, size.z) || 100;
+  draw3d();
+}
+function draw3d() {
+  const { r, scene, cam, group } = gl3;
+  if (!r) return;
+  const canvas = r.domElement, w = canvas.clientWidth || 600, h = canvas.clientHeight || 440;
+  r.setSize(w, h, false);
+  cam.aspect = w / h; cam.updateProjectionMatrix();
+  // Z del modelo es la altura: se acuesta la pieza y luego se aplica el giro del usuario
+  group.rotation.set(gl3.rx, 0, gl3.ry, 'XYZ');
+  const d = gl3.radius * 1.9 * gl3.dist;
+  cam.position.set(0, 0, d); cam.lookAt(0, 0, 0);
+  r.render(scene, cam);
+}
+function setView3d(on) {
+  gl3.on = on;
+  $('s3Wrap2d').hidden = on; $('s3Wrap3d').hidden = !on;
+  $('s3View2d').classList.toggle('on', !on); $('s3View3d').classList.toggle('on', on);
+  if (on) show3dSoon();
+}
+$('s3View2d').onclick = () => setView3d(false);
+$('s3View3d').onclick = () => setView3d(true);
 $('btn3d').onclick = open3d;
 $('s3Close').onclick = () => $('s3Dlg').close();
-$('s3Src').onchange = () => { s3.src = source3d(); update3d(); };
+$('s3Src').onchange = () => { s3.src = source3d(); update3d(); if (gl3.on) show3dSoon(); };
 document.querySelectorAll('#s3Dlg input, #s3Dlg select').forEach(el => {
   if (el.id !== 's3Src') el.addEventListener('input', update3dSoon);
 });
