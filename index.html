@@ -194,9 +194,15 @@
   .dcard .row { margin: 0; }
 
   @media (max-width: 900px) {
-    .app { grid-template-columns: 1fr; grid-template-rows: auto 60vh auto; }
+    /* En celular la página baja con el dedo: productos arriba, diseño al centro, herramientas abajo */
+    html, body { height: auto; }
+    .app { display: flex; flex-direction: column; }
+    .left, .right { overflow: visible; }
+    .center { height: 62vh; min-height: 340px; flex: none; }
     .left { border-right: 0; border-bottom: 1px solid var(--line); }
-    .tpl-list { flex-direction: row; overflow-x: auto; }
+    .tpl-list { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+    #btnNewTpl, #btnCopyTpl { display: inline-block; width: auto; margin-right: 6px; }
+    .tools .hbtn { padding: 6px 9px; font-size: 12px; }
     .tpl { min-width: 170px; }
     .cat { display: none; }
     .right { border-left: 0; }
@@ -209,6 +215,7 @@
   <div class="brand"><span class="logo">S</span> Sublima Fácil</div>
   <div class="tools">
     <button class="hbtn" id="btnInstall" hidden title="Instala el editor como app; funciona sin internet">⬇ Instalar app</button>
+    <button class="hbtn" id="btnHelp" title="Ayuda y atajos">❓</button>
     <button class="hbtn" id="btnUndo" title="Deshacer (Ctrl+Z)">↶ Deshacer</button>
     <button class="hbtn" id="btnRedo" title="Rehacer (Ctrl+Y)">↷ Rehacer</button>
     <button class="hbtn" id="btnNew">✨ Nuevo</button>
@@ -680,6 +687,38 @@
       <p id="s3Info" class="note" style="font-weight:600;color:var(--text)"></p>
       <button class="btn primary" id="s3Download">⬇ Descargar STL</button>
       <p id="s3Tips" class="note"></p>
+    </div>
+  </div>
+</dialog>
+
+<!-- Ayuda -->
+<dialog id="helpDlg" class="wide" style="width:min(640px,96vw)">
+  <div class="dlg-head">
+    <div><h3>Ayuda rápida</h3><span class="note">Lo básico para trabajar más rápido.</span></div>
+    <button class="x" id="helpClose" title="Cerrar">✕</button>
+  </div>
+  <div class="two" style="gap:18px">
+    <div>
+      <b>Atajos de teclado</b>
+      <ul class="note" style="padding-left:18px;line-height:1.8">
+        <li><b>Ctrl+Z</b> deshacer · <b>Ctrl+Y</b> rehacer</li>
+        <li><b>Ctrl+D</b> duplicar lo seleccionado</li>
+        <li><b>Ctrl+V</b> pegar una imagen</li>
+        <li><b>Flechas</b> mover poquito · <b>Shift+flechas</b> mover más</li>
+        <li><b>Supr</b> borrar lo seleccionado</li>
+        <li><b>Rueda del ratón</b> agrandar / achicar</li>
+        <li><b>Doble clic</b> en un texto para escribir</li>
+      </ul>
+    </div>
+    <div>
+      <b>Para que salga bien</b>
+      <ul class="note" style="padding-left:18px;line-height:1.8">
+        <li>La imagen debe llegar a la línea gris (<b>sangrado</b>).</li>
+        <li>Textos y caras dentro de la línea morada (<b>zona segura</b>).</li>
+        <li>Revisa la tarjeta <b>Revisión antes de imprimir</b>.</li>
+        <li>Imprime con <b>espejo</b> y en escala <b>100 %</b>.</li>
+        <li>Usa <b>Mis diseños</b> para guardar cada pedido.</li>
+      </ul>
     </div>
   </div>
 </dialog>
@@ -1815,6 +1854,8 @@ $('empty').onclick = () => pickFiles({ replace: true });
 $('btnUpload').onclick = () => pickFiles({ replace: true });
 $('btnAddImg').onclick = () => pickFiles({});
 $('btnAddText').onclick = addText;
+$('btnHelp').onclick = () => $('helpDlg').showModal();
+$('helpClose').onclick = () => $('helpDlg').close();
 
 /* Diseños rápidos: fondo, textos y adornos listos para cambiar; las fotos que ya estén se conservan */
 const PRESETS = {
