@@ -549,6 +549,12 @@
           <div><label class="f">Base (mm)</label><input type="number" id="s3MBase" value="1.2" min="0.4" max="10" step="0.2"></div>
           <div><label class="f">Capa de color (mm)</label><input type="number" id="s3MTop" value="0.6" min="0.2" max="5" step="0.2"></div>
         </div>
+        <label class="f">Archivo</label>
+        <select id="s3Out">
+          <option value="3mf">Una pieza con colores (.3mf) – recomendado</option>
+          <option value="zip">Una pieza por color (.zip con STL)</option>
+          <option value="stl">Una pieza de un solo color (.stl)</option>
+        </select>
         <label class="check" style="margin-top:10px"><input type="checkbox" id="s3NoWhite" checked> Ignorar el fondo blanco (solo el dibujo)</label>
         <label class="f">Relieve extra por color (mm, 0 = plano)</label>
         <input type="number" id="s3MStep" value="0" min="0" max="3" step="0.2">
@@ -2615,6 +2621,7 @@ function update3d() {
   $('s3ThrWrap').hidden = $('s3Style').value !== 'two';
   setOut('s3ArcOut', $('s3Arc').value + '°'); setOut('s3ThrOut', $('s3Thr').value + '%');
   if (isMulti()) { updateMulti(); return; }
+  $('s3Download').textContent = '⬇ Descargar STL';
   const m = s3.m = heightmap();
   draw3dPreview(m);
   const W = (m.nx - 1) * m.step, Hh = (m.ny - 1) * m.step;
@@ -2655,12 +2662,22 @@ function updateMulti() {
   chip(palette[0].rgb, 'Pieza 0: base', 'color libre');
   palette.forEach((p, i) => chip(p.rgb, `Pieza ${i + 1}`, `${Math.round(p.share * 100)}%`));
   const W = nx * step, Hh = ny * step;
-  let info = `Tamaño: ${W.toFixed(0)} × ${Hh.toFixed(0)} mm, alto ${q.top.toFixed(1)} mm · ${palette.length + 1} piezas en un ZIP.`;
+  const out = $('s3Out').value;
+  let info = `Tamaño: ${W.toFixed(0)} × ${Hh.toFixed(0)} mm, alto ${q.top.toFixed(1)} mm · `
+    + { '3mf': `una pieza con ${palette.length} colores (.3mf).`, zip: `${palette.length + 1} piezas en un ZIP.`, stl: 'una pieza de un color (.stl).' }[out];
   if (Hh > CREALITY_HI_MM) info += ' ⚠ Es más alta que la cama de la Creality Hi (260 mm): reduce el ancho.';
   $('s3Info').textContent = info;
   $('s3PvNote').textContent = 'Así quedarán los colores. Si se pierde un detalle, sube los colores; si hay puntitos, limpia más.';
-  $('s3Tips').innerHTML = '<b>En Creality Print:</b> descomprime el ZIP, arrastra <b>todos los STL juntos</b> y responde <b>“Sí”</b> cuando pregunte si es un solo objeto con varias partes. '
-    + 'Luego, en la lista de objetos, asigna a cada pieza su filamento del CFS (la pieza 0 es la base, puede ser blanca).';
+  $('s3Download').textContent = { '3mf': '⬇ Descargar 3MF', zip: '⬇ Descargar ZIP', stl: '⬇ Descargar STL' }[out];
+  $('s3Tips').innerHTML = {
+    '3mf': '<b>En Creality Print:</b> abre el archivo .3mf (Archivo → Abrir o arrástralo). Es <b>una sola pieza</b> y cada color ya trae su filamento: '
+      + `color 1 → filamento 1, color 2 → filamento 2, etc. Revisa en la lista de objetos que cada parte tenga el filamento correcto del CFS (la base usa el filamento 1).`,
+    zip: '<b>En Creality Print:</b> descomprime el ZIP, arrastra <b>todos los STL juntos</b> y responde <b>“Sí”</b> cuando pregunte si es un solo objeto con varias partes. '
+      + 'Luego asigna a cada pieza su filamento del CFS (la pieza 0 es la base).',
+    stl: '<b>Una pieza de un solo color:</b> los colores no se imprimen. '
+      + (q.extra > 0 ? 'Cada color queda a distinta altura, así que el dibujo se nota en relieve; también puedes cambiar de filamento por altura.'
+                     : '⚠ Con “Relieve extra por color” en 0 sale una placa lisa: súbelo (por ejemplo a 0.6 mm) para que se note el dibujo.'),
+  }[out];
 }
 
 // Malla cerrada: superficie con relieve + fondo + paredes, en STL binario
@@ -2734,29 +2751,68 @@ function stlWriter(total) {
   return { tri, bytes: new Uint8Array(buf) };
 }
 
-// Pieza cerrada hecha de los cuadritos de la cuadrícula donde inside(k) es verdadero
-function partStl(q, inside, z0, z1) {
+// Pieza cerrada hecha de los cuadritos de la cuadrícula donde inside(k) es verdadero.
+// Cada cuadrito va de z0 a zTop(k); entre cuadritos de distinta altura se pone el escalón.
+// Devuelve los triángulos ya orientados hacia afuera (9 números por triángulo).
+function partTris(q, inside, z0, zTop) {
   const { nx, ny, step } = q;
   const at = (i, j) => i >= 0 && j >= 0 && i < nx && j < ny && inside(j * nx + i);
-  let tris = 0;
+  const sideH = (i, j) => at(i, j) ? zTop(j * nx + i) : z0;
+  // Las paredes se cortan en todas las alturas que existen, para que no queden uniones abiertas
+  const lvSet = new Set([z0]);
+  for (let k = 0; k < nx * ny; k++) if (inside(k)) lvSet.add(zTop(k));
+  const levels = [...lvSet].sort((a, b) => a - b);
+  const spans = (lo, hi) => { const out = []; for (let n = 0; n < levels.length - 1; n++) if (levels[n] >= lo && levels[n + 1] <= hi) out.push([levels[n], levels[n + 1]]); return out; };
+  let count = 0;
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     if (!at(i, j)) continue;
-    tris += 4 + 2 * (!at(i - 1, j) + !at(i + 1, j) + !at(i, j - 1) + !at(i, j + 1));
+    const h = zTop(j * nx + i);
+    count += 4 + 2 * (spans(sideH(i - 1, j), h).length + spans(sideH(i + 1, j), h).length + spans(sideH(i, j - 1), h).length + spans(sideH(i, j + 1), h).length);
   }
-  if (!tris) return null;
-  const w = stlWriter(tris);
-  const quad = (a, b, c, d, e) => { w.tri(a, b, c, e); w.tri(a, c, d, e); };
+  const F = new Float32Array(count * 9);
+  let o = 0;
+  const tri = (a, b, c, e) => {
+    const n = [(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+               (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+               (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])];
+    if (n[0] * e[0] + n[1] * e[1] + n[2] * e[2] < 0) [b, c] = [c, b];
+    F.set(a, o); F.set(b, o + 3); F.set(c, o + 6); o += 9;
+  };
+  const quad = (a, b, c, d, e) => { tri(a, b, c, e); tri(a, c, d, e); };
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     if (!at(i, j)) continue;
+    const z1 = zTop(j * nx + i);
     const x0 = i * step, x1 = (i + 1) * step, y0 = (ny - 1 - j) * step, y1 = (ny - j) * step;
     quad([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1]);
     quad([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [0, 0, -1]);
-    if (!at(i - 1, j)) quad([x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [-1, 0, 0]);
-    if (!at(i + 1, j)) quad([x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1], [1, 0, 0]);
-    if (!at(i, j - 1)) quad([x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], [0, 1, 0]);
-    if (!at(i, j + 1)) quad([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [0, -1, 0]);
+    for (const [a, b] of spans(sideH(i - 1, j), z1)) quad([x0, y0, a], [x0, y1, a], [x0, y1, b], [x0, y0, b], [-1, 0, 0]);
+    for (const [a, b] of spans(sideH(i + 1, j), z1)) quad([x1, y0, a], [x1, y1, a], [x1, y1, b], [x1, y0, b], [1, 0, 0]);
+    for (const [a, b] of spans(sideH(i, j - 1), z1)) quad([x0, y1, a], [x1, y1, a], [x1, y1, b], [x0, y1, b], [0, 1, 0]);
+    for (const [a, b] of spans(sideH(i, j + 1), z1)) quad([x0, y0, a], [x1, y0, a], [x1, y0, b], [x0, y0, b], [0, -1, 0]);
+  }
+  return F;
+}
+function stlFromTris(F) {
+  const w = stlWriter(F.length / 9);
+  for (let o = 0; o < F.length; o += 9) {
+    const a = [F[o], F[o + 1], F[o + 2]], b = [F[o + 3], F[o + 4], F[o + 5]], c = [F[o + 6], F[o + 7], F[o + 8]];
+    const n = [(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+               (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+               (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])];
+    w.tri(a, b, c, n);
   }
   return w.bytes;
+}
+// Las piezas del multicolor: base con la forma del dibujo y una capa por color encima
+function multiParts(q) {
+  const L = q.labels;
+  const parts = [{ name: 'Base', rgb: q.palette[0].rgb, tris: partTris(q, k => L[k] !== EMPTY, 0, () => q.base) }];
+  q.palette.forEach((p, i) => {
+    const z1 = q.base + q.topT + q.extra * i;
+    const tris = partTris(q, k => L[k] === i, q.base, () => z1);
+    if (tris.length) parts.push({ name: `Color ${i + 1} ${hex(p.rgb)}`, rgb: p.rgb, tris, color: i });
+  });
+  return parts;
 }
 
 // ZIP sin compresión (los STL se descomprimen al instante en cualquier computadora)
@@ -2785,14 +2841,67 @@ function makeZip(files) {
 }
 
 function buildMultiZip(q) {
-  const name = fileName(), L = q.labels;
-  // La base toma la forma del dibujo (no incluye las partes vacías)
-  const files = [{ name: `${name}_0_base.stl`, data: partStl(q, k => L[k] !== EMPTY, 0, q.base) }];
-  q.palette.forEach((p, i) => {
-    const data = partStl(q, k => L[k] === i, q.base, q.base + q.topT + q.extra * i);
-    if (data) files.push({ name: `${name}_${i + 1}_color-${hex(p.rgb).slice(1)}.stl`, data });
+  const name = fileName();
+  return makeZip(multiParts(q).map((p, i) => ({
+    name: i ? `${name}_${i}_color-${hex(p.rgb).slice(1)}.stl` : `${name}_0_base.stl`,
+    data: stlFromTris(p.tris),
+  })));
+}
+
+// Una sola pieza de un color: cada zona a su altura (los colores se notan por el relieve)
+function buildSingleStl(q) {
+  const L = q.labels;
+  return new Blob([stlFromTris(partTris(q, k => L[k] !== EMPTY, 0, k => q.base + q.topT + q.extra * L[k]))], { type: 'model/stl' });
+}
+
+// 3MF: un solo objeto con una parte por color y su filamento ya asignado
+// (Creality Print y otros laminadores basados en Orca leen el filamento de Metadata/model_settings.config)
+function build3mf(q) {
+  const parts = multiParts(q), enc = new TextEncoder();
+  const f = v => +v.toFixed(3);
+  const objs = [], ids = [];
+  parts.forEach((p, n) => {
+    const id = n + 2, verts = [], map = new Map(), tris = [];
+    const vid = (x, y, z) => {
+      const key = `${f(x)},${f(y)},${f(z)}`;
+      let v = map.get(key);
+      if (v === undefined) { v = verts.length; map.set(key, v); verts.push(`<vertex x="${f(x)}" y="${f(y)}" z="${f(z)}"/>`); }
+      return v;
+    };
+    const F = p.tris;
+    for (let o = 0; o < F.length; o += 9) {
+      tris.push(`<triangle v1="${vid(F[o], F[o + 1], F[o + 2])}" v2="${vid(F[o + 3], F[o + 4], F[o + 5])}" v3="${vid(F[o + 6], F[o + 7], F[o + 8])}"/>`);
+    }
+    objs.push(`<object id="${id}" type="model" pid="1" pindex="${n}" name="${p.name}"><mesh><vertices>${verts.join('')}</vertices><triangles>${tris.join('')}</triangles></mesh></object>`);
+    ids.push(id);
   });
-  return makeZip(files);
+  const mainId = parts.length + 2, title = esc(fileName());
+  const model = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<model unit="millimeter" xml:lang="es-MX" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+    + '<metadata name="Application">Sublima Facil</metadata><resources>'
+    + `<basematerials id="1">${parts.map(p => `<base name="${p.name}" displaycolor="${hex(p.rgb).toUpperCase()}FF"/>`).join('')}</basematerials>`
+    + objs.join('')
+    + `<object id="${mainId}" type="model" name="${title}"><components>${ids.map(id => `<component objectid="${id}"/>`).join('')}</components></object>`
+    + `</resources><build><item objectid="${mainId}"/></build></model>`;
+  // Filamento: la base usa el mismo que el color más claro; cada color el siguiente
+  const extruder = p => (p.color ?? 0) + 1;
+  const config = '<?xml version="1.0" encoding="UTF-8"?>\n<config>'
+    + `<object id="${mainId}"><metadata key="name" value="${title}"/><metadata key="extruder" value="1"/>`
+    + parts.map((p, n) => `<part id="${ids[n]}" subtype="normal_part"><metadata key="name" value="${p.name}"/><metadata key="extruder" value="${extruder(p)}"/></part>`).join('')
+    + '</object></config>';
+  const types = '<?xml version="1.0" encoding="UTF-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+    + '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>'
+    + '<Default Extension="config" ContentType="text/xml"/></Types>';
+  const rels = '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + '<Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>';
+  const zip = makeZip([
+    { name: '[Content_Types].xml', data: enc.encode(types) },
+    { name: '_rels/.rels', data: enc.encode(rels) },
+    { name: '3D/3dmodel.model', data: enc.encode(model) },
+    { name: 'Metadata/model_settings.config', data: enc.encode(config) },
+  ]);
+  return new Blob([zip], { type: 'model/3mf' });
 }
 
 function open3d() {
@@ -2812,7 +2921,13 @@ document.querySelectorAll('#s3Dlg input, #s3Dlg select').forEach(el => {
 });
 $('s3Download').onclick = () => busy(async () => {
   const m = s3.m || heightmap();
-  if (m.multi) { download(buildMultiZip(m), `${fileName()}_multicolor_${Math.round(m.nx * m.step)}mm.zip`); return; }
+  if (m.multi) {
+    const out = $('s3Out').value, base = `${fileName()}_${Math.round(m.nx * m.step)}mm`;
+    if (out === '3mf') download(build3mf(m), `${base}_multicolor.3mf`);
+    else if (out === 'zip') download(buildMultiZip(m), `${base}_multicolor.zip`);
+    else download(buildSingleStl(m), `${base}_una-pieza.stl`);
+    return;
+  }
   const kind = m.litho ? (curvedOn() ? 'litofania-curva' : 'litofania') : 'relieve';
   download(buildStl(m), `${fileName()}_${kind}_${Math.round((m.nx - 1) * m.step)}mm.stl`);
 });
