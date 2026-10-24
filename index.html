@@ -564,6 +564,7 @@
   </div>
   <div class="actions">
     <button class="btn primary" id="mockDownload">⬇ Descargar imagen (JPG)</button>
+    <button class="btn" id="mockKit" title="Tu diseño en taza, termo, playera y cojín en una sola imagen">📦 Kit para el cliente (4 productos)</button>
   </div>
 </dialog>
 
@@ -2766,8 +2767,9 @@ const MOCKS = {
   }),
 };
 
-function drawMock() {
-  const c = $('mockCv').getContext('2d'), rot = +$('mockRot').value * Math.PI / 180;
+function drawMock() { drawMockOn($('mockCv'), mockType(), mockDesign, +$('mockRot').value * Math.PI / 180); }
+function drawMockOn(canvas, type, D, rot) {
+  const c = canvas.getContext('2d');
   c.setTransform(1, 0, 0, 1, 0, 0);
   const g = c.createLinearGradient(0, 0, 0, 750);
   g.addColorStop(0, '#f6f3f9'); g.addColorStop(1, '#e2dcea');
@@ -2778,8 +2780,55 @@ function drawMock() {
     r.addColorStop(0, 'rgba(40,20,60,.28)'); r.addColorStop(1, 'rgba(40,20,60,0)');
     c.fillStyle = r; c.beginPath(); c.arc(0, 0, rx, 0, TAU); c.fill(); c.restore();
   };
-  (MOCKS[mockType()] || MOCKS.flat)(c, mockDesign, rot, shadow);
+  (MOCKS[type] || MOCKS.flat)(c, D, rot, shadow);
 }
+
+/* Kit para el cliente: el mismo diseño en varios productos, en una sola imagen */
+const KIT = ['taza11', 'termo', 'playera', 'cojin'];
+// Ajusta el diseño a la forma de otro producto sin deformarlo: completo y con fondo difuminado
+function designFor(t, D) {
+  const w = 1200, h = Math.max(1, Math.round(1200 * t.h / t.w));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d'); x.imageSmoothingQuality = 'high';
+  const tiny = document.createElement('canvas'), f = 20 / Math.max(D.width, D.height);
+  tiny.width = Math.max(1, Math.round(D.width * f)); tiny.height = Math.max(1, Math.round(D.height * f));
+  tiny.getContext('2d').drawImage(D, 0, 0, tiny.width, tiny.height);
+  const cs = Math.max(w / tiny.width, h / tiny.height);
+  x.drawImage(tiny, (w - tiny.width * cs) / 2, (h - tiny.height * cs) / 2, tiny.width * cs, tiny.height * cs);
+  const ks = Math.min(w / D.width, h / D.height);
+  x.drawImage(D, (w - D.width * ks) / 2, (h - D.height * ks) / 2, D.width * ks, D.height * ks);
+  return c;
+}
+async function buildKit() {
+  const D = exportCanvas({ bleed: false, scale: Math.min(1, 1600 / Math.max(PW, PH)) });
+  const ids = [tpl.id, ...KIT.filter(id => id !== tpl.id)].slice(0, 4);
+  const out = document.createElement('canvas'); out.width = 2000; out.height = 1620;
+  const x = out.getContext('2d');
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, 2000, 1620);
+  const g = x.createLinearGradient(0, 0, 2000, 0); g.addColorStop(0, '#c2187a'); g.addColorStop(1, '#7b2ff7');
+  x.fillStyle = g; x.fillRect(0, 0, 2000, 120);
+  x.fillStyle = '#fff'; x.font = '800 54px Montserrat, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('Así quedaría tu diseño', 1000, 62);
+  const saved = tpl;
+  try {
+    ids.forEach((id, i) => {
+      const t = allTemplates().find(v => v.id === id);
+      tpl = t;   // los dibujos de producto usan las medidas de la plantilla activa
+      const cell = document.createElement('canvas'); cell.width = 1000; cell.height = 750;
+      const type = t.mock || (t.shape === 'circle' ? 'plate' : 'flat');
+      drawMockOn(cell, type, t === saved ? D : designFor(t, D), type === 'mug' ? 155 * Math.PI / 180 : Math.PI);
+      const cx = (i % 2) * 1000, cy = 120 + Math.floor(i / 2) * 750;
+      x.drawImage(cell, cx, cy);
+      x.fillStyle = 'rgba(31,27,43,.75)'; x.font = '700 34px Montserrat, sans-serif';
+      x.fillText(t.name, cx + 500, cy + 720);
+    });
+  } finally { tpl = saved; }
+  return out;
+}
+$('mockKit').onclick = () => busy(async () => {
+  const c = await buildKit();
+  c.toBlob(b => download(b, `${fileName()}_kit-cliente.jpg`), 'image/jpeg', 0.9);
+});
 function openMock() {
   if (!needDesign()) return;
   mockDesign = exportCanvas({ bleed: false, scale: Math.min(1, 1600 / Math.max(PW, PH)) });
