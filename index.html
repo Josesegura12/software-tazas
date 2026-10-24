@@ -811,6 +811,7 @@ const idb = (() => {
       const t = db.transaction(name, mode), req = fn(t.objectStore(name));
       t.oncomplete = () => res(req && req.result);
       t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error || new Error('El navegador canceló el guardado'));
     });
   };
   return {
@@ -906,10 +907,12 @@ function setTemplate(t, rescale = true) {
   tpl = t; PW = cm2px(t.w); PH = cm2px(t.h); B = cm2px(settings.bleedMm / 10);
   if (had) {
     const r = Math.min(PW / oPW, PH / oPH);
+    if (cells.length) cells = makeCells(cells.length);
     for (const l of layers) {
       l.x = l.x / oPW * PW; l.y = l.y / oPH * PH;
       if (l.type === 'text') l.size *= r;
       if (l.type === 'shape') { l.w *= r; l.h *= r; }
+      if (l.type === 'image' && !l.fit) l.s *= r;
       refit(l);
     }
   }
@@ -1025,7 +1028,7 @@ const kx = l => l.s * (l.sx || 1), ky = l => l.s * (l.sy || 1);
 function blobToImage(blob) {
   return new Promise((res, rej) => {
     const img = new Image();
-    img.onload = () => res(img);
+    img.onload = () => { URL.revokeObjectURL(img.src); res(img); };
     img.onerror = () => rej(new Error('No se pudo abrir la imagen'));
     img.src = URL.createObjectURL(blob);
   });
@@ -1073,7 +1076,7 @@ async function addFiles(files, { replace = false, cell = null } = {}) {
       const top = layers.findIndex(l => l.type !== 'image');
       if (top < 0) layers.push(target); else layers.splice(top, 0, target);
     }
-    Object.assign(target, { blob, orig: img, cut: null, cutTol: 0, rot: 0, flip: false, fit: settings.fitMode });
+    Object.assign(target, { blob, orig: img, cut: null, cutTol: 0, rot: 0, flip: false, fit: settings.fitMode, svg: null, fx: 'none', _blur: null });
     refit(target);
     sel = target;
   }
@@ -1463,6 +1466,7 @@ cv.addEventListener('pointerdown', e => {
   drag = null;
   const hd = handleAt(p);
   if (eraser.on && !(sel && sel.type === 'image')) setEraser(false);
+  if (eraser.on && !hit(sel, p)) { render(); return; }   // un clic fuera de la imagen no borra nada
   if (eraser.on) {
     // Cada trazo trabaja sobre una copia, así "Deshacer" regresa al estado anterior
     const { w, h } = layerSize(sel), c = document.createElement('canvas');
@@ -1532,7 +1536,7 @@ const endDrag = () => {
     drag = null;
     new Promise(r => c.toBlob(r, 'image/png')).then(async blob => {
       const img = await blobToImage(blob);
-      if (l.cut !== c) return;
+      if (l.cut !== c || !layers.includes(l)) return;
       Object.assign(l, { blob, orig: img, cut: null, cutTol: 0, svg: null });
       render(); syncPanel(); commit();
     });
@@ -1550,26 +1554,30 @@ cv.addEventListener('wheel', e => {
   e.preventDefault();
   sel.s *= Math.exp(-e.deltaY * 0.0012); sel.fit = null;
   render(); syncPanel();
-  clearTimeout(wheelT); wheelT = setTimeout(commit, 400);
+  clearTimeout(wheelT); wheelT = setTimeout(() => { wheelT = null; commit(); }, 400);
 }, { passive: false });
 
 document.addEventListener('keydown', e => {
   if (document.querySelector('dialog[open]')) return;
-  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  const ae = document.activeElement;
+  const typing = ae.tagName === 'TEXTAREA' || ae.isContentEditable
+    || (ae.tagName === 'INPUT' && /^(text|number|search|email|tel|url)$/.test(ae.type));
   if ((e.ctrlKey || e.metaKey) && !typing) {
     const k = e.key.toLowerCase();
     if (k === 'z' && !e.shiftKey) { undo(); e.preventDefault(); return; }
     if (k === 'y' || (k === 'z' && e.shiftKey)) { redo(); e.preventDefault(); return; }
     if (k === 'd' && sel) { duplicateSel(); e.preventDefault(); return; }
   }
-  if (!sel || typing) return;
+  if (!sel || typing || /SELECT|INPUT/.test(ae.tagName)) return;
   const step = e.shiftKey ? 50 : 5;
   const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
   if (moves[e.key]) { sel.x += moves[e.key][0]; sel.y += moves[e.key][1]; sel.fit = null; }
   else if (e.key === 'Delete' || e.key === 'Backspace') { removeSel(); e.preventDefault(); return; }
   else return;
-  e.preventDefault(); render(); syncPanel(); commit();
+  e.preventDefault(); render(); syncPanel();
+  clearTimeout(keyT); keyT = setTimeout(() => { keyT = null; commit(); }, 400);
 });
+let keyT;
 
 /* ---------- Deshacer / rehacer ---------- */
 function snapshot() {
@@ -1580,6 +1588,7 @@ function applySnap(s) {
   layers = s.layers.map(l => ({ ...l, adj: l.adj && { ...l.adj } }));
   cells = s.cells.map(c => ({ ...c }));
   bgColor = s.bgColor; bgClear = s.bgClear; sel = layers[s.sel] || null;
+  layers.forEach(l => l.fit && refit(l));
   $('bgColor').value = bgColor; $('bgClear').checked = bgClear;
   render(); syncPanel(); scheduleSave(); scheduleCheck();
 }
@@ -1676,8 +1685,11 @@ function renderChecks(list, card) {
   card.className = 'card check-card ' + level;
   if (card.id === 'checkCard') $('checkTitle').textContent = level === 'ok' ? '✔ Listo para imprimir' : 'Revisión antes de imprimir';
 }
-function undo() { if (hIndex > 0) { applySnap(undoStack[--hIndex]); updateUndo(); } }
-function redo() { if (hIndex < undoStack.length - 1) { applySnap(undoStack[++hIndex]); updateUndo(); } }
+function flushPending() {
+  if (wheelT || keyT) { clearTimeout(wheelT); clearTimeout(keyT); wheelT = keyT = null; commit(); }
+}
+function undo() { flushPending(); if (hIndex > 0) { applySnap(undoStack[--hIndex]); updateUndo(); } }
+function redo() { flushPending(); if (hIndex < undoStack.length - 1) { applySnap(undoStack[++hIndex]); updateUndo(); } }
 function updateUndo() { $('btnUndo').disabled = hIndex <= 0; $('btnRedo').disabled = hIndex >= undoStack.length - 1; }
 $('btnUndo').onclick = undo;
 $('btnRedo').onclick = redo;
@@ -1697,6 +1709,7 @@ function scheduleSave() {
   }), 700);
 }
 async function loadDoc(d) {
+  clearTimeout(saveT);
   loading = true;
   try {
     const t = allTemplates().find(x => x.id === d.tplId) || d.tpl;
@@ -1712,6 +1725,7 @@ async function loadDoc(d) {
       ls.push(l);
     }
     layers = ls; cells = d.cells || [];
+    layers.forEach(l => l.fit && refit(l));   // por si se guardó con otro sangrado
     bgColor = d.bgColor || '#ffffff'; bgClear = !!d.bgClear;
     $('bgColor').value = bgColor; $('bgClear').checked = bgClear;
   } finally { loading = false; }
@@ -1741,7 +1755,10 @@ async function renderDesigns() {
     el.querySelector('b').textContent = d.name;
     el.querySelector('.note').textContent = `${d.product} · ${new Date(d.date).toLocaleDateString()}`;
     const [open, del] = el.querySelectorAll('button');
-    open.onclick = async () => { $('designsDlg').close(); await loadDoc(d.doc); };
+    open.onclick = async () => {
+      if (layers.length && !confirm(`¿Abrir "${d.name}"? Lo que tienes ahora en el editor se reemplazará (guárdalo primero si lo necesitas).`)) return;
+      $('designsDlg').close(); await loadDoc(d.doc);
+    };
     del.onclick = async () => {
       if (!confirm(`¿Borrar el diseño "${d.name}"?`)) return;
       await idb.del('designs', d.id).catch(() => {});
@@ -1843,7 +1860,7 @@ const setOut = (id, v) => { $(id).textContent = v; };
 function syncPanel() {
   $('selCard').setAttribute('aria-disabled', sel ? 'false' : 'true');
   $('selName').textContent = sel ? { image: '· imagen', text: '· texto', shape: '· figura' }[sel.type] : '';
-  $('btnCover').disabled = $('btnContain').disabled = $('btnBlurFit').disabled = !!sel && sel.type !== 'image';
+  $('btnCover').disabled = $('btnContain').disabled = $('btnBlurFit').disabled = $('btnStretch').disabled = !!sel && sel.type !== 'image';
   if (sel) {
     const z = Math.round(sel.s / baseScale(sel) * 100);
     $('zoom').value = z; setOut('zoomOut', z + '%');
@@ -1898,7 +1915,7 @@ function syncPanel() {
 // Un control que cambia la selección: actualiza en vivo y guarda en el historial al soltar
 function bind(id, apply, ev = 'input') {
   $(id).addEventListener(ev, e => { if (!sel) return; apply(e.target); render(); syncPanel(); });
-  if (ev === 'input') $(id).addEventListener('change', () => sel && commit());
+  if (ev === 'input') $(id).addEventListener('change', () => commit());
 }
 bind('zoom', t => { sel.s = baseScale(sel) * t.value / 100; sel.fit = null; });
 bind('rot', t => { sel.rot = +t.value; sel.fit = null; });
@@ -2290,7 +2307,8 @@ function exportCanvas({ mirror = false, bleed = true, scale = 1, noBg = false } 
 const CRC = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 function crc32(bytes) { let c = 0xffffffff; for (const b of bytes) c = CRC[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
 function toPng(canvas) {
-  return new Promise(res => canvas.toBlob(async blob => {
+  return new Promise((res, rej) => canvas.toBlob(async blob => {
+    if (!blob) { rej(new Error('La imagen es demasiado grande para el navegador. Reduce el tamaño del producto o de la hoja.')); return; }
     const src = new Uint8Array(await blob.arrayBuffer());
     const ppm = Math.round(DPI / 0.0254);
     const chunk = new Uint8Array(21), dv = new DataView(chunk.buffer);
@@ -3005,7 +3023,8 @@ function update3d() {
 
 function updateMulti() {
   let q;
-  try { q = s3.m = quantize(); } catch (err) { $('s3Info').textContent = err.message; return; }
+  try { q = s3.m = quantize(); } catch (err) { s3.m = null; $('s3Info').textContent = err.message; $('s3Download').disabled = true; return; }
+  $('s3Download').disabled = false;
   const { labels, palette, nx, ny, step } = q;
   const pv = $('s3Pv'); pv.width = nx; pv.height = ny;
   const x = pv.getContext('2d'), img = x.createImageData(nx, ny);
@@ -3285,7 +3304,14 @@ document.querySelectorAll('#s3Dlg input, #s3Dlg select').forEach(el => {
   if (el.id !== 's3Src') el.addEventListener('input', update3dSoon);
 });
 $('s3Download').onclick = () => busy(async () => {
-  const m = s3.m || heightmap();
+  clearTimeout(s3T); update3d();   // usa exactamente lo que está elegido ahora
+  const m = s3.m;
+  if (!m) return;
+  const tris = estimateTris(m);
+  if (tris > (m.multi && $('s3Out').value === '3mf' ? 2.5e6 : 6e6)) {
+    toast(`La pieza es demasiado grande para el navegador (${(tris / 1e6).toFixed(1)} millones de triángulos). Baja la calidad o el ancho.`, 'bad', 9000);
+    return;
+  }
   if (m.multi) {
     const out = $('s3Out').value, base = `${fileName()}_${Math.round(m.nx * m.step)}mm`;
     if (out === '3mf') download(build3mf(m), `${base}_multicolor.3mf`);
@@ -3297,12 +3323,23 @@ $('s3Download').onclick = () => busy(async () => {
   download(buildStl(m), `${fileName()}_${kind}_${Math.round((m.nx - 1) * m.step)}mm.stl`);
 });
 
+// Triángulos aproximados del archivo (para no pasarse de lo que aguanta el navegador)
+function estimateTris(m) {
+  if (m.multi) {
+    let filled = 0;
+    for (let k = 0; k < m.labels.length; k++) if (m.labels[k] !== EMPTY) filled++;
+    return filled * 4 * 2 + Math.sqrt(filled) * 40;
+  }
+  const top = 2 * (m.nx - 1) * (m.ny - 1);
+  return top * (curvedOn() ? 2 : 1) + 6 * (m.nx + m.ny);
+}
+
 /* ---------- Inicio ---------- */
 new ResizeObserver(() => { if (tpl) { fit(); render(); } }).observe(stage);
 (async () => {
   try {
     const d = await idb.get('kv', 'current');
-    if (d && d.layers && d.layers.length) { await loadDoc(d); return; }
+    if (d && ((d.layers && d.layers.length) || (d.cells && d.cells.length))) { await loadDoc(d); return; }
   } catch {}
   const last = store.get('sf_last', null);
   setTemplate(allTemplates().find(t => t.id === last) || BASE[0]);
