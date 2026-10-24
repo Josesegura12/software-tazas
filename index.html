@@ -237,6 +237,14 @@
     </section>
     <section class="card">
       <button id="btnUpload" class="btn primary">📷 Subir / cambiar imagen</button>
+      <label class="f" style="margin-top:2px">Al subir, acomodar la imagen</label>
+      <select id="fitMode" style="margin-bottom:8px">
+        <option value="auto">Automático (se ajusta sola, sin recortar)</option>
+        <option value="stretch">Estirar al tamaño de la plantilla</option>
+        <option value="blur">Completa con fondo difuminado</option>
+        <option value="cover">Rellenar (puede recortar orillas)</option>
+        <option value="contain">Completa (puede quedar espacio)</option>
+      </select>
       <div class="row r2">
         <button id="btnAddImg" class="btn">+ Imagen</button>
         <button id="btnAddText" class="btn">T  Texto</button>
@@ -261,10 +269,13 @@
 
     <section class="card" id="selCard" aria-disabled="true">
       <h3>Ajustar <span id="selName" class="sub"></span></h3>
-      <div class="row r4">
+      <div class="row">
         <button class="btn" id="btnCover" title="Cubre toda el área sin deformar (puede recortar orillas)">Rellenar</button>
-        <button class="btn" id="btnContain" title="Se ve completa (puede quedar espacio)">Completa</button>
         <button class="btn" id="btnStretch" title="Estira la imagen al tamaño exacto de la plantilla">Estirar</button>
+        <button class="btn" id="btnContain" title="Se ve completa (puede quedar espacio)">Completa</button>
+      </div>
+      <div class="row r2">
+        <button class="btn" id="btnBlurFit" title="Se ve completa y los huecos se llenan con la misma imagen difuminada">Completa + difuminado</button>
         <button class="btn" id="btnCenter">Centrar</button>
       </div>
       <p class="note" style="margin:0 0 4px">Para alargar a mano, usa los cuadritos azules de los lados.</p>
@@ -603,7 +614,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const settings = Object.assign(
-  { bleedMm: 2, guideOpacity: 50, guides: true, paper: 'a4', orient: 'auto', gap: 0.2, marks: true },
+  { bleedMm: 2, guideOpacity: 50, guides: true, fitMode: 'auto', paper: 'a4', orient: 'auto', gap: 0.2, marks: true },
   store.get('sf_settings', {}));
 const saveSettings = () => store.set('sf_settings', settings);
 
@@ -739,15 +750,25 @@ function refit(l) {
   if (l.frame) {
     const m = cm2px(SAFE_CM) * 2;
     l.w = PW - m; l.h = PH - m; l.s = 1; l.rot = 0; l.x = PW / 2; l.y = PH / 2;
-  } else if (l.fit === 'stretch') {
-    const r = targetRect(l), s = layerSize(l);
-    l.s = 1; l.sx = r.w / s.w; l.sy = r.h / s.h; l.rot = 0;
-    centerLayer(l);
   } else if (l.fit) {
-    l.sx = l.sy = 1;
-    l.s = l.fit === 'cover' ? coverScale(l) : containScale(l);
+    const mode = l.fit === 'auto' ? autoFit(l) : l.fit;
+    if (l.type === 'image') l.blurBg = mode === 'blur';
+    if (mode === 'stretch') {
+      const r = targetRect(l), s = layerSize(l);
+      l.s = 1; l.sx = r.w / s.w; l.sy = r.h / s.h; l.rot = 0;
+    } else {
+      l.sx = l.sy = 1;
+      l.s = mode === 'cover' ? coverScale(l) : containScale(l);
+    }
     centerLayer(l);
   }
+}
+// Automático: si la forma de la imagen se parece a la plantilla se estira un poco
+// (no se nota); si es muy distinta se ve completa con fondo difuminado. Nunca recorta.
+function autoFit(l) {
+  const r = targetRect(l), s = layerSize(l);
+  const d = (s.w / s.h) / (r.w / r.h);
+  return Math.max(d, 1 / d) <= 1.2 ? 'stretch' : 'blur';
 }
 // Escala final en cada eje (s es la escala uniforme; sx/sy estiran)
 const kx = l => l.s * (l.sx || 1), ky = l => l.s * (l.sy || 1);
@@ -780,7 +801,7 @@ async function addFiles(files, { replace = false, cell = null } = {}) {
       const top = layers.findIndex(l => l.type !== 'image');
       if (top < 0) layers.push(target); else layers.splice(top, 0, target);
     }
-    Object.assign(target, { blob: files[i], orig: img, cut: null, cutTol: 0, rot: 0, flip: false, fit: 'cover' });
+    Object.assign(target, { blob: files[i], orig: img, cut: null, cutTol: 0, rot: 0, flip: false, fit: settings.fitMode });
     refit(target);
     sel = target;
   }
@@ -894,9 +915,31 @@ const fullShape = c => tpl.shape === 'circle'
 const trimShape = c => tpl.shape === 'circle'
   ? c.ellipse(PW / 2, PH / 2, PW / 2, PH / 2, 0, 0, TAU) : c.rect(0, 0, PW, PH);
 
+// Versión muy pequeña de la imagen: al ampliarla queda difuminada
+function blurOf(l) {
+  const src = l.cut || l.orig;
+  if (l._blur && l._blur.src === src) return l._blur.canvas;
+  const { w, h } = layerSize(l), f = 24 / Math.max(w, h);
+  const tiny = document.createElement('canvas');
+  tiny.width = Math.max(1, Math.round(w * f)); tiny.height = Math.max(1, Math.round(h * f));
+  const tx = tiny.getContext('2d'); tx.imageSmoothingQuality = 'high'; tx.drawImage(src, 0, 0, tiny.width, tiny.height);
+  const big = document.createElement('canvas');
+  big.width = tiny.width * 12; big.height = tiny.height * 12;
+  const bx = big.getContext('2d'); bx.imageSmoothingQuality = 'high'; bx.drawImage(tiny, 0, 0, big.width, big.height);
+  l._blur = { src, canvas: big };
+  return big;
+}
+
 function drawLayer(c, l) {
   c.save();
   if (inCell(l)) { const r = cellRect(l.cell); c.beginPath(); c.rect(r.x, r.y, r.w, r.h); c.clip(); }
+  if (l.type === 'image' && l.blurBg) {
+    // Fondo: la misma imagen ampliada y difuminada para que no queden huecos
+    const r = targetRect(l), bl = blurOf(l), sc = Math.max(r.w / bl.width, r.h / bl.height);
+    c.filter = adjFilter(l);
+    c.drawImage(bl, r.x + (r.w - bl.width * sc) / 2, r.y + (r.h - bl.height * sc) / 2, bl.width * sc, bl.height * sc);
+    c.filter = 'none';
+  }
   c.translate(l.x, l.y);
   c.rotate(l.rot * Math.PI / 180);
   c.scale(kx(l) * (l.flip ? -1 : 1), ky(l));
@@ -1378,7 +1421,7 @@ $('btnRedo').onclick = redo;
 /* ---------- Guardado automático y diseños ---------- */
 function docData() {
   return { tplId: tpl.id, tpl: { ...tpl }, bgColor, bgClear, cells: cells.map(c => ({ ...c })),
-           layers: layers.map(l => { const o = { ...l }; delete o.orig; delete o.cut; return o; }) };
+           layers: layers.map(l => { const o = { ...l }; delete o.orig; delete o.cut; delete o._blur; return o; }) };
 }
 let saveT;
 function scheduleSave() {
@@ -1481,7 +1524,7 @@ const setOut = (id, v) => { $(id).textContent = v; };
 function syncPanel() {
   $('selCard').setAttribute('aria-disabled', sel ? 'false' : 'true');
   $('selName').textContent = sel ? { image: '· imagen', text: '· texto', shape: '· figura' }[sel.type] : '';
-  $('btnCover').disabled = $('btnContain').disabled = !!sel && sel.type !== 'image';
+  $('btnCover').disabled = $('btnContain').disabled = $('btnBlurFit').disabled = !!sel && sel.type !== 'image';
   if (sel) {
     const z = Math.round(sel.s / baseScale(sel) * 100);
     $('zoom').value = z; setOut('zoomOut', z + '%');
@@ -1510,7 +1553,9 @@ function syncPanel() {
   }
   document.querySelectorAll('[data-collage]').forEach(b => b.classList.toggle('on', +b.dataset.collage === cells.length && cells.length > 0));
   document.querySelectorAll('[data-fx]').forEach(b => b.classList.toggle('on', type === 'image' && (sel.fx || 'none') === b.dataset.fx));
-  $('btnStretch').classList.toggle('on', !!sel && sel.fit === 'stretch');
+  for (const [id, fit] of [['btnCover', 'cover'], ['btnContain', 'contain'], ['btnStretch', 'stretch'], ['btnBlurFit', 'blur']]) {
+    $(id).classList.toggle('on', !!sel && (sel.fit === fit || (sel.fit === 'auto' && autoFit(sel) === fit)));
+  }
   $('btnSvg').disabled = !(type === 'image' && sel.svg);
   if (eraser.on && type !== 'image') setEraser(false);
 
@@ -1536,6 +1581,14 @@ const act = (id, fn) => $(id).onclick = () => { if (!sel) return; fn(); render()
 act('btnCover', () => { sel.fit = 'cover'; refit(sel); });
 act('btnContain', () => { sel.fit = 'contain'; refit(sel); });
 act('btnStretch', () => { sel.fit = 'stretch'; refit(sel); });
+act('btnBlurFit', () => { sel.fit = 'blur'; refit(sel); });
+$('fitMode').value = settings.fitMode;
+$('fitMode').onchange = e => {
+  settings.fitMode = e.target.value; saveSettings();
+  // Aplica el modo elegido también a las imágenes que ya están en el diseño
+  layers.filter(l => l.type === 'image').forEach(l => { l.fit = settings.fitMode; refit(l); });
+  render(); syncPanel(); commit();
+};
 act('btnCenter', () => centerLayer(sel));
 act('btnRotL', () => { sel.rot = Math.round(sel.rot / 90) * 90 - 90; });
 act('btnRotR', () => { sel.rot = Math.round(sel.rot / 90) * 90 + 90; });
